@@ -1,0 +1,11 @@
+# file      : build/export.build
+# copyright : Copyright (c) 2014-2018 Code Synthesis Ltd
+# license   : MIT; see accompanying LICENSE file
+
+$out_root/
+{
+  include bpkg-rep/
+}
+
+if ($import.target == exe{bpkg-rep-publish})
+  export $out_root/bpkg-rep/exe{bpkg-rep-publish}

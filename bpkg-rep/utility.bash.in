@@ -1,0 +1,87 @@
+# file      : bpkg-rep/utility.bash.in
+# copyright : Copyright (c) 2014-2018 Code Synthesis Ltd
+# license   : MIT; see accompanying LICENSE file
+
+# Utility functions useful for implementing bpkg repository utilities.
+
+if [ "$bpkg_rep_utility" ]; then
+  return 0
+else
+  bpkg_rep_utility=true
+fi
+
+# Diagnostics.
+#
+function info  () { echo "$*" 1>&2; }
+function error () { info "$*"; exit 1; }
+
+# Trace a command line, quoting empty arguments as well as those that contain
+# spaces.
+#
+function trace_cmd () # <cmd> <arg>...
+{
+  local s="+"
+  while [ $# -gt 0 ]; do
+    if [ -z "$1" -o -z "${1##* *}" ]; then
+      s="$s '$1'"
+    else
+      s="$s $1"
+    fi
+
+    shift
+  done
+
+  info "$s"
+}
+
+# Trace the current function name and arguments.
+#
+function trace_func () # <args>...
+{
+  trace_cmd "${FUNCNAME[1]}" "$@"
+}
+
+# Trace and run a command.
+#
+function run () # <cmd> <arg>...
+{
+  trace_cmd "$@"
+  "$@"
+}
+
+# Return lower-case URL scheme or empty string if the argument doesn't look
+# like a URL.
+#
+function url_scheme () # <url>
+{
+  sed -n -re 's%^(.*)://.*$%\L\1%p' <<<"$1"
+}
+
+# Check that the git repository properly responds to the probing request
+# before the timeout (in seconds). Noop for protocols other than HTTP(S).
+#
+function check_git_connectivity () # <repo-url> <timeout>
+{
+  local url="$1"
+  local tmo="$2"
+
+  local s
+  s="$(url_scheme "$url")"
+
+  if [ "$s" == "http" -o "$s" == "https" ]; then
+    local u q
+
+    u="$(sed -n -re 's%^([^?]*).*$%\1%p' <<<"$url")" # Strips query part.
+    q="$(sed -n -re 's%^[^?]*(.*)$%\1%p' <<<"$url")" # Query part.
+
+    if [ -z "$q" ]; then
+      u="$u/info/refs?service=git-upload-pack"
+    else
+      u="$u/info/refs$q&service=git-upload-pack"
+    fi
+
+    # Here we limit the time for the whole operation.
+    #
+    curl -S -s --max-time "$tmo" "$u" >/dev/null
+  fi
+}

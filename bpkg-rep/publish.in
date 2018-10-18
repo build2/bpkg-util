@@ -1,0 +1,309 @@
+#!/usr/bin/env bash
+
+# file      : bpkg-rep/publish.in
+# copyright : Copyright (c) 2014-2018 Code Synthesis Ltd
+# license   : MIT; see accompanying LICENSE file
+
+# Update (bpkg-rep-create(1)) and publish (rsync(1)) an archive-based
+# repository.
+#
+# Pull a pre-cloned (read-only) git repository with the contents of an
+# archive-based bpkg repository. Bail out if nothing changed from the the
+# previous run. Otherwise, regenerate the repository meta-data by running
+# bpkg-rep-create(1) on each section of the repository and, optionally,
+# synchronize it to one or more destinations with rsync.
+#
+# The repository contents are expected to be in the <dir>/1/ subdirectory. The
+# script saves the last successfully published commit in the <dir>.publish
+# file.
+#
+# --destination|-d <host>:<dir>
+#
+#   Remote host and directory to rsync the repository to. Note that the
+#   trailing 1/ will be added automatically. In other words, the rsync command
+#   will be in the form:
+#
+#   rsync ... <dir>/1/ <host>:<dir>/1/
+#
+#   Repeat this option to specify multiple destinations. In this case, the
+#   destinations are synced in the order specified with the first failure
+#   terminating the process (so if you have a "primary" destination and a
+#   "mirror", you probably want to specify the former first).
+#
+# --timeout <seconds>
+#
+#   Git and rsync operation timeout. Specifically, the operation will be
+#   aborted if there is no network activity for the specified time. Default is
+#   60 seconds. Note that currently the git timeout is only supported for the
+#   http(s) transport.
+#
+# --lock-timeout <seconds>
+#
+#   The repository lock timeout. Fail if another instance of the script does
+#   not release the repository in the specified time. The default is 0 (do
+#   not wait).
+#
+#   Note that you will most likely want to specify a non-zero timeout for cron
+#   jobs that may potentially overlap.
+#
+# --log-dir <dir>
+#
+#   Directory to create the temporary log files in. If unspecified, the stderr
+#   is not redirected and no log is created by default.
+#
+#   The log is dumped to stderr in case of an error or at the end of execution
+#   unless in the quiet mode and is then deleted.
+#
+# --quiet
+#
+#   Run quiet. Specifically, don't dump the log to stderr on exit with zero
+#   status.
+#
+# --bpkg <path>
+#
+#   The package manager program to be used for the repository update. This
+#   should be the path to the bpkg executable.
+#
+usage="usage: $0 [<options>] <dir> [<rep-create-options>] [-- <rsync-options>]"
+
+trap "{ exit 1; }" ERR
+set -o errtrace # Trap ERR in functions.
+
+@import bpkg-rep/utility@
+
+# The script own options.
+#
+repo_ver=1
+destinations=()
+timeout=60
+lock_timeout=0
+log_dir=
+quiet=
+bpkg=
+
+while [ $# -gt 0 ]; do
+  case $1 in
+    --destination|-d)
+      shift
+      destinations+=("$1")
+      shift || true
+      ;;
+    --timeout)
+      shift
+      timeout="$1"
+      shift || true
+      ;;
+    --lock-timeout)
+      shift
+      lock_timeout="$1"
+      shift || true
+      ;;
+    --log-dir)
+      shift
+      log_dir="${1%/}"
+      shift || true
+      ;;
+    --quiet)
+      shift
+      quiet=true
+      ;;
+    --bpkg)
+      shift
+      bpkg="$1"
+      shift || true
+      ;;
+    --)
+      shift
+      break
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+
+# The repository directory.
+#
+repo_dir="${1%/}"
+shift || true
+
+# bpkg-rep-create options.
+#
+rep_create_options=()
+
+while [ $# -gt 0 ]; do
+  case $1 in
+    --)
+      shift
+      break
+      ;;
+    *)
+      rep_create_options+=("$1")
+      shift
+      ;;
+  esac
+done
+
+# rsync options.
+#
+rsync_options=()
+
+while [ $# -gt 0 ]; do
+  rsync_options+=("$1")
+  shift
+done
+
+# Validate options and arguments.
+#
+if [ -z "$repo_dir" ]; then
+  error "$usage"
+fi
+
+if [ ! -d "$repo_dir" ]; then
+  error "'$repo_dir' does not exist or is not a directory"
+fi
+
+# If the log directory is specified then redirect stderr to the log file and
+# setup the trap that dumps it on exit, if required.
+#
+if [ -n "$log_dir" ]; then
+
+  if [ ! -d "$log_dir" ]; then
+    error "'$log_dir' does not exist or is not a directory"
+  fi
+
+  # Create the log file.
+  #
+  log="$(mktemp "$log_dir/$(basename "$repo_dir").XXXXXXXXXX")"
+
+  # Save the stderr file descriptor so we can dump the log into it on exit, if
+  # required. Then redirect it to the log file.
+  #
+  exec {stderr}>&2
+  exec 2>>"$log"
+
+  function exit_trap ()
+  {
+    local status="$?"
+
+    # Dump the log to stderr if exiting with non-zero status or verbose.
+    #
+    if [ $status -ne 0 -o ! "$quiet" ]; then
+
+      # Keep the log if failed to dump for any reason.
+      #
+      if ! cat "$log" >&$stderr; then
+        return
+      fi
+    fi
+
+    rm -f "$log"
+  }
+
+  trap exit_trap EXIT
+fi
+
+# Make sure the commit file is present.
+#
+published_commit="$repo_dir.publish"
+touch "$published_commit"
+
+# Open the reading file descriptor and lock the repository. Fail if unable to
+# lock before timeout.
+#
+exec {cfd}<"$published_commit"
+
+if ! flock -w "$lock_timeout" "$cfd"; then
+  info "another instance is already running"
+  exit 2
+fi
+
+# Pull the repository.
+#
+# Git doesn't support the connection timeout option. The options we use are
+# just an approximation of the former, that, in particular, don't cover the
+# connection establishing. To work around this problem, before running a git
+# command that assumes the remote repository communication we manually check
+# connectivity with the remote repository.
+#
+if ! remote_url="$(git -C "$repo_dir" config --get remote.origin.url)"; then
+  error "'$repo_dir' is not a git repository"
+fi
+
+run check_git_connectivity "$remote_url" "$timeout"
+
+# Fail if no network activity happens during the time specified.
+#
+run git -c http.lowSpeedLimit=1 -c "http.lowSpeedTime=$timeout" \
+-C "$repo_dir" pull -v >&2
+
+# Match the HEAD commit id to the one stored in the file. If it matches, then
+# nothing changed in the repository from the previous run and we can silently
+# bail out.
+#
+commit="$(git -C "$repo_dir" rev-parse HEAD)"
+pc="$(cat <&"$cfd")"
+
+if [ "$commit" == "$pc" ]; then
+  quiet=true
+  exit 0
+fi
+
+# If bpkg path is not specified, then use the bpkg program from the script
+# directory, if present. Otherwise, use the 'bpkg' path.
+#
+if [ -z "$bpkg" ]; then
+  bpkg="$(dirname "$(realpath "${BASH_SOURCE[0]}")")/bpkg"
+
+  if [ ! -x "$bpkg" ]; then
+    bpkg=bpkg
+  fi
+fi
+
+# Find repository sections.
+#
+manifests="$(find "$repo_dir/$repo_ver" -type f -name repositories.manifest)"
+
+# Update the repository sections.
+#
+while read f; do
+  run "$bpkg" rep-create "${rep_create_options[@]}" "$(dirname "$f")"
+done <<<"$manifests"
+
+# rsync (over ssh) the repository to the destinations.
+#
+# Approximate the data transfer timeout via the ServerAlive* ssh options,
+# rounding the timeout up to the nearest multiple of ten.
+#
+# Note: must not contain spaces/use quoting (see rsync -e option).
+#
+n=$(($timeout > 0 ? ($timeout + 9) / 10 : 1))
+ssh_options=(-o ConnectTimeout=$timeout \
+	     -o ServerAliveInterval=10 \
+	     -o ServerAliveCountMax=$n)
+
+for d in "${destinations[@]}"; do
+
+  # -r (recursive)
+  # -l (copy symlinks and symlinks)
+  # -p (preserve perms)
+  # -t (preserve timestamps)
+  # -O (omit dir timestamps)
+  #
+  # -c (use checksum)
+  # -e (remote shell command)
+  #
+  # --safe-links       (ignore symlinks pointing outside the tree)
+  # --delay-updates    (first upload all files on the side then move)
+  # --prune-empty-dirs (remove empty dirs)
+  # --delete-after     (delete entries after the transfer)
+  #
+  # We also exclude hiddent files (start with dot).
+  #
+  run rsync -v -rlptO -c --safe-links --delay-updates --exclude '.*' \
+--prune-empty-dirs --delete-after -e "ssh ${ssh_options[*]}" \
+"${rsync_options[@]}" "$repo_dir/$repo_ver/" "$d/$repo_ver/" >&2
+
+done
+
+echo "$commit" >"$published_commit"

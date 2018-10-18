@@ -1,0 +1,9 @@
+# file      : build/root.build
+# copyright : Copyright (c) 2014-2018 Code Synthesis Ltd
+# license   : MIT; see accompanying LICENSE file
+
+# Bash.
+#
+using bash
+
+bpkg-rep/bash{*}: install.subdirs = true
