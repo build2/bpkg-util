@@ -59,6 +59,12 @@
 #   Run quiet. Specifically, don't dump the log to stderr on exit with zero
 #   status.
 #
+# --config <path>
+#
+#   The configuration file containing a bash fragment. Repeat this option to
+#   specify multiple configurations that will be sourced in the order
+#   specified.
+#
 # --bpkg <path>
 #
 #   The package manager program to be used for the repository update. This
@@ -79,6 +85,7 @@ timeout=60
 lock_timeout=0
 log_dir=
 quiet=
+configurations=()
 bpkg=
 
 while [ $# -gt 0 ]; do
@@ -106,6 +113,11 @@ while [ $# -gt 0 ]; do
     --quiet)
       shift
       quiet=true
+      ;;
+    --config)
+      shift
+      configurations+=("$1")
+      shift || true
       ;;
     --bpkg)
       shift
@@ -202,6 +214,12 @@ if [ -n "$log_dir" ]; then
 
   trap exit_trap EXIT
 fi
+
+# Source the configurations.
+#
+for c in "${configurations[@]}"; do
+  source "$c" >&2
+done
 
 # Make sure the commit file is present.
 #
