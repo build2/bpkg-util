@@ -1,1 +1,78 @@
-@@ TODO
+This guide shows how to install and configure bpkg-rep-publish script to update
+and publish an archive-based bpkg repository stored in the git repository.
+Normally bpkg repository needs to be signed and synchronized to the remote
+host that requires authentication. Here we assume that you have sorted out the
+password-less repository signing and ssh authentication.
+
+1. Create 'bpub' User
+
+This user will be used to run the bpkg-rep-publish script. We will also use
+its home directory to build and install bpkg-rep package, clone the git
+repository, create the logs directory, etc.
+
+We create this user with a disabled password so only root will be able to
+operate as bpub. Because of this restriction we will allow bpub to run sudo
+without a password:
+
+# adduser --disabled-password bpub
+# echo "bpub ALL=(ALL) NOPASSWD:ALL" >/etc/sudoers.d/bpub
+# chmod 0440 /etc/sudoers.d/bpub
+
+In the rest of this guide commands that start with the $ shell prompt are
+expected to be executed as the bpub user and in its home directory (those
+that start with # as above are run as root). To change to the bpub user
+from root, do:
+
+# su -l bpub
+
+
+2. Install Prerequisites
+
+a) Install a C++ compiler and git using your distribution's packages.
+
+b) Unless you already have the build2 toolchain installed, download (normally
+   from https://download.build2.org) and install build2-toolchain by following
+   its INSTALL file instructions. You can build build2-toolchain using bpub's
+   login and in its home directory.
+
+
+3. Build and Install bpkg-rep.
+
+$ mkdir bpkg-rep
+$ cd bpkg-rep
+
+$ bpkg create                               \
+    cc                                      \
+    config.bin.rpath=/home/bpub/install/lib \
+    config.install.root=/home/bpub/install
+
+$ bpkg build bpkg-rep,bpkg@https://pkg.cppget.org/1/alpha
+$ bpkg install -a
+
+$ cd .. # Back to bpub home.
+
+
+4. Configure the repository update and synchronization.
+
+Pre-clone the git repository containing the bpkg repository and create the log
+directory:
+
+$ git clone https://git.example.org/foo.git
+$ mkdir foo.log
+
+Note that the repository contents are expected to be in the foo/1/
+subdirectory (see bpkg-rep/publish.in for details).
+
+Perform the initial publish to test the setup and make the subsequent
+synchronizations incremental. Here we assume that you may need to additionally
+pass some bpkg-rep-create(1) and rsync(1) options to the bpkg-rep-publish
+script.
+
+install/bin/bpkg-rep-publish -d example.org:/var/bpkg/1/foo foo ...
+
+Setup publishing as a cron job:
+
+$ crontab -l
+MAILTO=publish@example.org
+PATH=/usr/local/bin:/bin:/usr/bin
+0 * * * * $HOME/install/bin/bpkg-rep-publish -d example.org:/var/bpkg/1/foo --log-dir $HOME/queue.log --lock-timeout 600 $HOME/foo ...
