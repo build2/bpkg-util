@@ -20,10 +20,10 @@
 # --destination|-d <host>:<dir>
 #
 #   Remote host and directory to rsync the repository to. Note that the
-#   trailing 1/ will be added automatically. In other words, the rsync command
-#   will be in the form:
+#   directory should include the 1/ component and any sub-directories that may
+#   follow. In other words, the rsync command will be in the form:
 #
-#   rsync ... <dir>/1/ <host>:<dir>/1/
+#   rsync ... <dir>/1/ <host>:<dir>/
 #
 #   Repeat this option to specify multiple destinations. In this case, the
 #   destinations are synced in the order specified with the first failure
@@ -92,7 +92,7 @@ while [ $# -gt 0 ]; do
   case $1 in
     --destination|-d)
       shift
-      destinations+=("$1")
+      destinations+=("${1%/}")
       shift || true
       ;;
     --timeout)
@@ -320,7 +320,7 @@ for d in "${destinations[@]}"; do
   #
   run rsync -v -rlptO -c --safe-links --delay-updates --exclude '.*' \
 --prune-empty-dirs --delete-after -e "ssh ${ssh_options[*]}" \
-"${rsync_options[@]}" "$repo_dir/$repo_ver/" "$d/$repo_ver/" >&2
+"${rsync_options[@]}" "$repo_dir/$repo_ver/" "$d/" >&2
 
 done
 
