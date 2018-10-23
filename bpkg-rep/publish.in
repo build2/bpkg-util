@@ -304,13 +304,13 @@ for d in "${destinations[@]}"; do
 
   # -r (recursive)
   # -l (copy symlinks and symlinks)
-  # -p (preserve perms)
   # -t (preserve timestamps)
   # -O (omit dir timestamps)
   #
   # -c (use checksum)
   # -e (remote shell command)
   #
+  # --chmod=ugo=rwX    (give new files the destination-default permissions)
   # --safe-links       (ignore symlinks pointing outside the tree)
   # --delay-updates    (first upload all files on the side then move)
   # --prune-empty-dirs (remove empty dirs)
@@ -318,8 +318,8 @@ for d in "${destinations[@]}"; do
   #
   # We also exclude hiddent files (start with dot).
   #
-  run rsync -v -rlptO -c --safe-links --delay-updates --exclude '.*' \
---prune-empty-dirs --delete-after -e "ssh ${ssh_options[*]}" \
+  run rsync -v -rltO -c --chmod=ugo=rwX --safe-links --delay-updates \
+--exclude '.*' --prune-empty-dirs --delete-after -e "ssh ${ssh_options[*]}" \
 "${rsync_options[@]}" "$repo_dir/$repo_ver/" "$d/" >&2
 
 done
