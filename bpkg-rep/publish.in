@@ -25,6 +25,9 @@
 #
 #   rsync ... <dir>/1/ <host>:<dir>/
 #
+#   See below for the actual rsync command including a brief explanation of
+#   options passed.
+#
 #   Repeat this option to specify multiple destinations. In this case, the
 #   destinations are synced in the order specified with the first failure
 #   terminating the process (so if you have a "primary" destination and a

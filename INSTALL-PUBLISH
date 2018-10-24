@@ -1,8 +1,14 @@
-This guide shows how to install and configure bpkg-rep-publish script to update
-and publish an archive-based bpkg repository stored in the git repository.
-Normally bpkg repository needs to be signed and synchronized to the remote
-host that requires authentication. Here we assume that you have sorted out the
-password-less repository signing and ssh authentication.
+This guide shows how to install and configure the bpkg-rep-publish script to
+update and publish an archive-based bpkg repository that is stored in a git
+repository. Normally the bpkg repository is signed and synchronized to a
+remote host. Both of these operations usually requires authentication so here
+we assume that you have arranged for the password-less repository signing and
+ssh authentication (for example, using unlocked private keys, ssh-agent and
+openssl-agent, etc).
+
+See also the documentation at the beginning of bpkg-rep-publish for details
+on the script's operation.
+
 
 1. Create 'bpub' User
 
@@ -30,10 +36,8 @@ from root, do:
 
 a) Install a C++ compiler and git using your distribution's packages.
 
-b) Unless you already have the build2 toolchain installed, download (normally
-   from https://download.build2.org) and install build2-toolchain by following
-   its INSTALL file instructions. You can build build2-toolchain using bpub's
-   login and in its home directory.
+b) Unless you already have the build2 toolchain, install it by following
+   instructions on https://build2.org/install.xhtml.
 
 
 3. Build and Install bpkg-rep.
@@ -41,10 +45,10 @@ b) Unless you already have the build2 toolchain installed, download (normally
 $ mkdir bpkg-rep
 $ cd bpkg-rep
 
-$ bpkg create                               \
-    cc                                      \
-    config.bin.rpath=/home/bpub/install/lib \
-    config.install.root=/home/bpub/install
+$ bpkg create                          \
+    cc                                 \
+    config.bin.rpath=$HOME/install/lib \
+    config.install.root=$HOME/install
 
 $ bpkg build bpkg-rep,bpkg@https://pkg.cppget.org/1/alpha
 $ bpkg install -a
@@ -60,19 +64,18 @@ directory:
 $ git clone https://git.example.org/foo.git
 $ mkdir foo.log
 
-Note that the repository contents are expected to be in the foo/1/
-subdirectory (see bpkg-rep/publish.in for details).
+Note that the bpkg repository contents are expected to be in the foo/1/
+subdirectory (see bpkg-rep-publish for details).
 
-Perform the initial publish to test the setup and make the subsequent
-synchronizations incremental. Here we assume that you may need to additionally
-pass some bpkg-rep-create(1) and rsync(1) options to the bpkg-rep-publish
-script.
+Perform the initial publication to test the setup and make the subsequent
+synchronizations incremental. Here you may need to pass additionall
+bpkg-rep-create(1) and rsync(1) options to the bpkg-rep-publish script.
 
-install/bin/bpkg-rep-publish -d example.org:/var/bpkg/1/foo foo ...
+$ install/bin/bpkg-rep-publish -d example.org:/var/bpkg/1/foo foo ...
 
-Setup publishing as a cron job:
+Setup publishing as a cron job (every 5 minutes in this example):
 
 $ crontab -l
 MAILTO=publish@example.org
 PATH=/usr/local/bin:/bin:/usr/bin
-0 * * * * $HOME/install/bin/bpkg-rep-publish -d example.org:/var/bpkg/1/foo --log-dir $HOME/queue.log --lock-timeout 600 $HOME/foo ...
+0/5 * * * * $HOME/install/bin/bpkg-rep-publish -d example.org:/var/bpkg/1/foo --log-dir $HOME/queue.log --lock-timeout 600 $HOME/foo ...
