@@ -319,7 +319,7 @@ for d in "${destinations[@]}"; do
   # --prune-empty-dirs (remove empty dirs)
   # --delete-after     (delete entries after the transfer)
   #
-  # We also exclude hiddent files (start with dot).
+  # We also exclude hidden files (start with dot).
   #
   run rsync -v -rltO -c --chmod=ugo=rwX --safe-links --delay-updates \
 --exclude '.*' --prune-empty-dirs --delete-after -e "ssh ${ssh_options[*]}" \
