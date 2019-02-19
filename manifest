@@ -1,6 +1,6 @@
 : 1
 name: bpkg-rep
-version: 0.9.0-a.0.z
+version: 0.9.0
 project: build2
 summary: bpkg repository management utilities
 license: MIT
@@ -21,4 +21,4 @@ build-include: **
 requires: bash >= 4.3
 depends: * build2 >= 0.8.0-
 depends: * bpkg >= 0.8.0-
-depends: bpkg [0.9.0-a.0.1 0.9.0-a.1)
+depends: bpkg ^0.9.0
