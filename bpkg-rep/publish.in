@@ -306,7 +306,7 @@ ssh_options=(-o ConnectTimeout=$timeout \
 for d in "${destinations[@]}"; do
 
   # -r (recursive)
-  # -l (copy symlinks and symlinks)
+  # -l (copy symlinks as symlinks)
   # -t (preserve timestamps)
   # -O (omit dir timestamps)
   #
