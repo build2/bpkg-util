@@ -7,5 +7,8 @@ $out_root/
   include bpkg-rep/
 }
 
-if ($import.target == exe{bpkg-rep-publish})
-  export $out_root/bpkg-rep/exe{bpkg-rep-publish}
+switch $import.target
+{
+  case exe{bpkg-rep-publish}
+    export $out_root/bpkg-rep/exe{bpkg-rep-publish}
+}
