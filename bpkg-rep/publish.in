@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 
 # file      : bpkg-rep/publish.in
-# copyright : Copyright (c) 2014-2019 Code Synthesis Ltd
 # license   : MIT; see accompanying LICENSE file
 
 # Update (bpkg-rep-create(1)) and publish (rsync(1)) an archive-based
