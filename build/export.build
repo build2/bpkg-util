@@ -9,5 +9,6 @@ $out_root/
 switch $import.target
 {
   case exe{bpkg-rep-publish}
-    export $out_root/bpkg-rep/exe{bpkg-rep-publish}
+  case bash{package-archive}
+    export $out_root/bpkg-rep/$import.target
 }

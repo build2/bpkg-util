@@ -1,0 +1,167 @@
+# file      : bpkg-rep/package-archive.bash.in
+# license   : MIT; see accompanying LICENSE file
+
+# Utility functions useful for managing package archives.
+
+if [ "$bpkg_rep_package_archive" ]; then
+  return 0
+else
+  bpkg_rep_package_archive=true
+fi
+
+@import libbutl/manifest-parser@
+
+# We expect the user to set the bpkg_rep_bpkg variable to the bpkg program
+# path.
+#
+if [ ! -v bpkg_rep_bpkg ]; then
+  echo "error: variable bpkg_rep_bpkg is not set" >&2
+  exit 1
+fi
+
+# Extract the package information from a package archive and print it in the
+# '<name> <version> <project>' form, where the project field is empty if the
+# project value is not specified in the manifest.
+#
+function bpkg_rep_pkg_verify_archive () # <path>
+{
+  # We can't use the process substitution for input redirect here, since such
+  # a process failure is not trapped. Thus, read the manifest file into a
+  # variable and parse it afterwards, which is probably ok since package
+  # manifests are normally not too big.
+  #
+  # Note that alternatively we could use the process substitution for running
+  # bpkg, treat the name value absence as indication of a failure, and exit
+  # with non-zero status if that's the case. Feels a bit hackish though.
+  #
+  local m
+  m="$("$bpkg_rep_bpkg" pkg-verify --manifest "$1")"
+
+  butl_manifest_parser_start <<<"$m"
+
+  local name=
+  local version=
+  local project=
+
+  local n v
+  while IFS=: read -ru "$butl_manifest_parser_ofd" -d '' n v; do
+    case "$n" in
+      name)    name="$v"    ;;
+      version) version="$v" ;;
+      project) project="$v" ;;
+    esac
+  done
+
+  butl_manifest_parser_finish
+
+  echo -n "$name $version $project"
+}
+
+# Search for package archives in a directory using the package name and
+# version pattern and printing their paths newline-separated. If the version
+# argument is '*', then print archives for all package versions. Otherwise if
+# the version contains the trailing '*', then print archives for all revisions
+# of the specified version and for the exact version otherwise. For example:
+#
+# bpkg_rep_pkg_find_archives foo '*'    dir/
+# bpkg_rep_pkg_find_archives foo '1.0*' dir/
+# bpkg_rep_pkg_find_archives foo '1.0'  dir/
+#
+# Note that the resulting archive paths include the specified directory as a
+# prefix.
+#
+# NOTE: this function can be called with overriden IFS.
+#
+function bpkg_rep_pkg_find_archives () # <name> <version> <dir>
+{
+  IFS=$' \t\n' bpkg_rep_pkg_find_archives_impl "$@"
+}
+
+function bpkg_rep_pkg_find_archives_impl ()
+{
+  local nam="$1"
+  local ver="$2"
+  local dir="$3"
+
+  local r=""
+
+  if [ -d "$dir" ]; then
+    local vr # Version with the revision stripped, if search for revisions.
+    local np # File name pattern for archives search.
+
+    if [ "$ver" != "*" -a "${ver: -1}" == "*" ]; then  # <version>*
+      vr="$(sed -n -re 's%^(\+?[^+]+)(\+[0-9]+)?\*$%\1%p' <<<"$ver")"
+      np="$nam-$vr*.*" # foo-1.0*.*, etc.
+    else                                               # * or <version>
+      np="$nam-$ver.*" # foo-*.*, foo-1.0.*, etc.
+    fi
+
+    # Go through the potentially matching archives (for example, for 'foo'
+    # '1.2.3+2*': foo-1.2.3.tar.gz, foo-1.2.3+1.tar.gz, foo-1.2.30.tar.gz,
+    # etc) and return those which package name and version match properly.
+    #
+    local f
+    while read f; do
+      local p
+      p=($(bpkg_rep_pkg_verify_archive "$f"))
+
+      local n="${p[0]}"
+      local v="${p[1]}"
+
+      if [[ "$n" == "$nam" &&
+            ( "$ver" == "*"  || \
+              "$v" == "$ver" || \
+              ( -n "$vr" && "$v" =~ ^"$vr"(\+[0-9]+)?$ )) ]]; then
+
+        if [ -n "$r" ]; then
+          r="$r"$'\n'"$f"
+        else
+          r="$f"
+        fi
+      fi
+    done < <(find "$dir" -type f -name "$np")
+  fi
+
+  if [ -n "$r" ]; then
+    echo -n "$r"
+  fi
+}
+
+# Search for a package archive in a directory using a file name pattern. If
+# the archive is found, then print the package information in the
+# '<name>\n<version>\n<project>\n<path>' form, where the project field is
+# empty if the project value is not specified in the manifest.
+#
+# Note that if there are multiple archives matching the pattern, then it is
+# unspecified which one is picked.
+#
+# NOTE: this function can be called with overriden IFS.
+#
+function bpkg_rep_pkg_find_archive () # <pattern> <dir>
+{
+  IFS=$' \t\n' bpkg_rep_pkg_find_archive_impl "$@"
+}
+
+function bpkg_rep_pkg_find_archive_impl ()
+{
+  local pat="$1"
+  local dir="$2"
+
+  if [ -d "$dir" ]; then
+    local f
+
+    # We could probably use -print -quit but this is not portable (NetBSD
+    # needs -exit instead of -quit).
+    #
+    f="$(find "$dir" -type f -name "$pat" | head -n 1)"
+
+    if [ -n "$f" ]; then
+
+      local p
+      p=($(bpkg_rep_pkg_verify_archive "$f"))
+
+      printf "${p[0]}\n${p[1]}\n${p[2]}\n$f"
+      return
+    fi
+  fi
+}

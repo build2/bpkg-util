@@ -1,6 +1,8 @@
 # file      : tests/build/root.build
 # license   : MIT; see accompanying LICENSE file
 
-# Setup the utilities that we are testing.
+using bash
+
+# Every exe{} in this subproject is by default a test.
 #
-import publish = bpkg-rep%exe{bpkg-rep-publish}
+exe{*}: test = true

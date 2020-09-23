@@ -1,0 +1,8 @@
+# file      : tests/package-archive/buildfile
+# license   : MIT; see accompanying LICENSE file
+
+import mods = bpkg-rep%bash{package-archive}
+
+./: exe{driver} file{*.tar.gz}
+
+exe{driver}: in{driver} $mods testscript

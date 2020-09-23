@@ -19,3 +19,4 @@ requires: bash >= 4.3
 depends: * build2 >= 0.13.0
 depends: * bpkg >= 0.13.0
 depends: bpkg [0.14.0-a.0.1 0.14.0-a.1)
+depends: libbutl.bash [0.14.0-a.0.1 0.14.0-a.1)

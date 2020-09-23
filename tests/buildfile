@@ -1,6 +1,4 @@
 # file      : tests/buildfile
 # license   : MIT; see accompanying LICENSE file
 
-./: testscript{*} $publish
-
-testscript{publish}@./: test = $publish
+./: {*/ -build/}

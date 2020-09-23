@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+
+# file      : tests/package-archive/driver.in
+# license   : MIT; see accompanying LICENSE file
+
+#  bpkg utility path.
+#
+bpkg_rep_bpkg=bpkg
+
+trap "{ exit 1; }" ERR
+set -o errtrace # Trap ERR in functions.
+
+@import bpkg-rep/package-archive@
+
+# Call the function passed on the command line.
+#
+# Note that we reset IFS to make sure that the function being tested is not
+# affected by its value set by the caller.
+#
+IFS= "$@"

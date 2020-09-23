@@ -4,3 +4,7 @@ summary: bpkg repository management utilities repository
 :
 role: prerequisite
 location: ../bpkg.git##HEAD
+
+:
+role: prerequisite
+location: ../libbutl.bash.git##HEAD
