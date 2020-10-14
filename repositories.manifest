@@ -3,8 +3,5 @@ summary: extra build2 package management utilities
 
 :
 role: prerequisite
-location: ../bpkg.git##HEAD
-
-:
-role: prerequisite
-location: ../libbutl.bash.git##HEAD
+location: https://stage.build2.org/1
+trust: 37:CE:2C:A5:1D:CF:93:81:D7:07:46:AD:66:B3:C3:90:83:B8:96:9E:34:F0:E7:B3:A2:B0:6C:EF:66:A4:BE:65
