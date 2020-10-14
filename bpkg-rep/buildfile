@@ -3,9 +3,10 @@
 
 import mods = libbutl.bash%bash{manifest-parser}
 
-./: exe{bpkg-rep-publish} bash{package-archive}
+./: exe{bpkg-rep-publish bpkg-rep-manage} bash{package-archive}
 
 exe{bpkg-rep-publish}: in{publish} bash{utility}
+exe{bpkg-rep-manage}:  in{manage}  bash{utility package-archive}
 
 # Public modules.
 #

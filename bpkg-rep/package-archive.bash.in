@@ -23,6 +23,9 @@ fi
 # '<name> <version> <project>' form, where the project field is empty if the
 # project value is not specified in the manifest.
 #
+# Note that, in particular, it verifies that the archive file name matches the
+# package name and version.
+#
 function bpkg_rep_pkg_verify_archive () # <path>
 {
   # We can't use the process substitution for input redirect here, since such
