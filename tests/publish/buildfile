@@ -1,7 +1,7 @@
 # file      : tests/publish/buildfile
 # license   : MIT; see accompanying LICENSE file
 
-import publish = bpkg-rep%exe{bpkg-rep-publish}
+import publish = bpkg-util%exe{bpkg-util-publish}
 
 ./: testscript $publish
 

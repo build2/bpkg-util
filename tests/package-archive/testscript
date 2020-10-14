@@ -12,7 +12,7 @@ clone_arcs = \
 : pkg-verify-archive
 :
 {
-  test.arguments += bpkg_rep_pkg_verify_archive
+  test.arguments += bpkg_util_pkg_verify_archive
 
   : non-existing-archive
   :
@@ -28,7 +28,7 @@ clone_arcs = \
 : pkg-find-archives
 :
 {
-  test.arguments += bpkg_rep_pkg_find_archives
+  test.arguments += bpkg_util_pkg_find_archives
 
   : none
   :
@@ -106,7 +106,7 @@ clone_arcs = \
 : pkg-find-archive
 :
 {
-  test.arguments += bpkg_rep_pkg_find_archive
+  test.arguments += bpkg_util_pkg_find_archive
 
   : non-existent
   :

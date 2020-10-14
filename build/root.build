@@ -5,4 +5,4 @@
 #
 using bash
 
-bpkg-rep/bash{*}: install.subdirs = true
+bpkg-util/bash{*}: install.subdirs = true

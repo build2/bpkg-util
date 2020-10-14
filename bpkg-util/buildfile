@@ -1,12 +1,12 @@
-# file      : bpkg-rep/buildfile
+# file      : bpkg-util/buildfile
 # license   : MIT; see accompanying LICENSE file
 
 import mods = libbutl.bash%bash{manifest-parser}
 
-./: exe{bpkg-rep-publish bpkg-rep-manage} bash{package-archive}
+./: exe{bpkg-util-publish bpkg-util-manage} bash{package-archive}
 
-exe{bpkg-rep-publish}: in{publish} bash{utility}
-exe{bpkg-rep-manage}:  in{manage}  bash{utility package-archive}
+exe{bpkg-util-publish}: in{publish} bash{utility}
+exe{bpkg-util-manage}:  in{manage}  bash{utility package-archive}
 
 # Public modules.
 #

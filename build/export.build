@@ -3,12 +3,12 @@
 
 $out_root/
 {
-  include bpkg-rep/
+  include bpkg-util/
 }
 
 switch $import.target
 {
-  case exe{bpkg-rep-publish}
+  case exe{bpkg-util-publish}
   case bash{package-archive}
-    export $out_root/bpkg-rep/$import.target
+    export $out_root/bpkg-util/$import.target
 }

@@ -1,4 +1,4 @@
-This package contains bpkg repository management utilities.
+This package contains extra build2 package management utilities.
 
 build2 is an open source, cross-platform toolchain for building and packaging
 C++ code. Its aim is a modern build system and dependency manager for the C++

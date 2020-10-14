@@ -1,12 +1,12 @@
-# file      : bpkg-rep/utility.bash.in
+# file      : bpkg-util/utility.bash.in
 # license   : MIT; see accompanying LICENSE file
 
-# Utility functions useful for implementing bpkg repository utilities.
+# Utility functions useful for implementing package management utilities.
 
-if [ "$bpkg_rep_utility" ]; then
+if [ "$bpkg_util_utility" ]; then
   return 0
 else
-  bpkg_rep_utility=true
+  bpkg_util_utility=true
 fi
 
 # Diagnostics.

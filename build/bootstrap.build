@@ -1,7 +1,7 @@
 # file      : build/bootstrap.build
 # license   : MIT; see accompanying LICENSE file
 
-project = bpkg-rep
+project = bpkg-util
 
 using version
 using config

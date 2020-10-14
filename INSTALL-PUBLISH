@@ -1,4 +1,4 @@
-This guide shows how to install and configure the bpkg-rep-publish script to
+This guide shows how to install and configure the bpkg-util-publish script to
 update and publish an archive-based bpkg repository that is stored in a git
 repository. Normally the bpkg repository is signed and synchronized to a
 remote host. Both of these operations usually requires authentication so here
@@ -6,14 +6,14 @@ we assume that you have arranged for the password-less repository signing and
 ssh authentication (for example, using unlocked private keys, ssh-agent and
 openssl-agent, etc).
 
-See also the documentation at the beginning of bpkg-rep-publish for details
+See also the documentation at the beginning of bpkg-util-publish for details
 on the script's operation.
 
 
 1. Create 'bpub' User
 
-This user will be used to run the bpkg-rep-publish script. We will also use
-its home directory to build and install bpkg-rep package, clone the git
+This user will be used to run the bpkg-util-publish script. We will also use
+its home directory to build and install bpkg-util package, clone the git
 repository, create the logs directory, etc.
 
 We create this user with a disabled password so only root will be able to
@@ -40,17 +40,17 @@ b) Unless you already have the build2 toolchain, install it by following
    instructions on https://build2.org/install.xhtml.
 
 
-3. Build and Install bpkg-rep.
+3. Build and Install bpkg-util.
 
-$ mkdir bpkg-rep
-$ cd bpkg-rep
+$ mkdir bpkg-util
+$ cd bpkg-util
 
 $ bpkg create                          \
     cc                                 \
     config.bin.rpath=$HOME/install/lib \
     config.install.root=$HOME/install
 
-$ bpkg build bpkg-rep,bpkg@https://pkg.cppget.org/1/alpha
+$ bpkg build bpkg-util,bpkg@https://pkg.cppget.org/1/alpha
 $ bpkg install -a
 
 $ cd .. # Back to bpub home.
@@ -65,17 +65,17 @@ $ git clone https://git.example.org/foo.git
 $ mkdir foo.log
 
 Note that the bpkg repository contents are expected to be in the foo/1/
-subdirectory (see bpkg-rep-publish for details).
+subdirectory (see bpkg-util-publish for details).
 
 Perform the initial publication to test the setup and make the subsequent
 synchronizations incremental. Here you may need to pass additionall
-bpkg-rep-create(1) and rsync(1) options to the bpkg-rep-publish script.
+bpkg-rep-create(1) and rsync(1) options to the bpkg-util-publish script.
 
-$ install/bin/bpkg-rep-publish -d example.org:/var/bpkg/1/foo foo ...
+$ install/bin/bpkg-util-publish -d example.org:/var/bpkg/1/foo foo ...
 
 Setup publishing as a cron job (every 5 minutes in this example):
 
 $ crontab -l
 MAILTO=publish@example.org
 PATH=/usr/local/bin:/bin:/usr/bin
-0/5 * * * * $HOME/install/bin/bpkg-rep-publish -d example.org:/var/bpkg/1/foo --log-dir $HOME/foo.log --lock-timeout 600 $HOME/foo ...
+0/5 * * * * $HOME/install/bin/bpkg-util-publish -d example.org:/var/bpkg/1/foo --log-dir $HOME/foo.log --lock-timeout 600 $HOME/foo ...

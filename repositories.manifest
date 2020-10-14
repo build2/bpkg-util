@@ -1,5 +1,5 @@
 : 1
-summary: bpkg repository management utilities repository
+summary: extra build2 package management utilities
 
 :
 role: prerequisite

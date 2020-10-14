@@ -1,15 +1,15 @@
 : 1
-name: bpkg-rep
+name: bpkg-util
 version: 0.14.0-a.0.z
 project: build2
-summary: bpkg repository management utilities
+summary: extra build2 package management utilities
 license: MIT
 topics: package dependency management, build toolchain
 description-file: README
 changes-file: NEWS
 url: https://build2.org
 doc-url: https://build2.org/doc.xhtml
-src-url: https://git.build2.org/cgit/bpkg-rep/tree/
+src-url: https://git.build2.org/cgit/bpkg-util/tree/
 email: users@build2.org
 build-warning-email: builds@build2.org
 builds: all
