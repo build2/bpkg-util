@@ -86,19 +86,19 @@ fi
 
 # Check that both git repositories are clean.
 #
-# if [ -n "$(git -C $src_dir status --porcelain)" ]; then
-#   error "git repository in '$src_dir' is not clean"
-# fi
+if [ -n "$(git -C $src_dir status --porcelain)" ]; then
+  error "git repository in '$src_dir' is not clean"
+fi
 
-# if [ -n "$(git -C $dst_dir status --porcelain)" ]; then
-#   error "git repository in '$dst_dir' is not clean"
-# fi
+if [ -n "$(git -C $dst_dir status --porcelain)" ]; then
+  error "git repository in '$dst_dir' is not clean"
+fi
 
-# # Use run() to show the user that git is the source of the diagnostics.
-# # "Already up to date", for example, is too vague.
-# #
-# run git -C "$src_dir" pull >&2
-# run git -C "$dst_dir" pull >&2
+# Use run() to show the user that git is the source of the diagnostics.
+# "Already up to date", for example, is too vague.
+#
+run git -C "$src_dir" pull >&2
+run git -C "$dst_dir" pull >&2
 
 # Load the source and destination repositories' submit configurations (section
 # name/directory mappings and owners directory path).
