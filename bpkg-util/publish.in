@@ -90,8 +90,8 @@ quiet=
 configurations=()
 bpkg=
 
-while [ $# -gt 0 ]; do
-  case $1 in
+while [ "$#" -gt 0 ]; do
+  case "$1" in
     --destination|-d)
       shift
       destinations+=("${1%/}")
