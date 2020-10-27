@@ -199,7 +199,7 @@ for (( i=0; i != ${#pending_set[@]}; )); do
 done < <(git -C "$src_dir" log --diff-filter=A --pretty=format:%h)
 
 if [ "${#pending_seq[@]}" -eq 0 ]; then
-  info "Good news, nothing to manage!"
+  info "good news, nothing to manage"
   exit 0
 fi
 
@@ -725,7 +725,7 @@ function migrate ()
   # Pause to give the operator a chance to look at the commits before the list
   # of remaining pending commits is displayed.
   #
-  read -p "Press Enter to continue: "
+  read -p "press Enter to continue"
 }
 
 # Push local changes to the remote source and/or destination git repositories.
