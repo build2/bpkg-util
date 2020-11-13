@@ -132,7 +132,7 @@ function bpkg_util_pkg_find_archives_impl ()
 
 # Search for a package archive in a directory using a file name pattern. If
 # the archive is found, then print the package information in the
-# '<name>\n<version>\n<project>\n<path>' form, where the project field is
+# '<path>\n<name>\n<version>\n<project>' form, where the project field is
 # empty if the project value is not specified in the manifest.
 #
 # Note that if there are multiple archives matching the pattern, then it is
@@ -163,7 +163,7 @@ function bpkg_util_pkg_find_archive_impl ()
       local p
       p=($(bpkg_util_pkg_verify_archive "$f"))
 
-      printf "${p[0]}\n${p[1]}\n${p[2]}\n$f"
+      printf "$f\n${p[0]}\n${p[1]}\n${p[2]}"
       return
     fi
   fi

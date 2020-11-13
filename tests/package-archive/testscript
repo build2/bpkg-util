@@ -118,10 +118,10 @@ clone_arcs = \
     $clone_arcs;
 
     $* 'libhello-0.1.0.*' $~ >>:/"EOO"
+      $~/libhello-0.1.0.tar.gz
       libhello
       0.1.0
       hello
-      $~/libhello-0.1.0.tar.gz
       EOO
   }
 }
