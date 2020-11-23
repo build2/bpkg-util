@@ -9,28 +9,42 @@
 # Interactively migrate packages and/or ownership manifests from a source git
 # repository to a destination git repository.
 #
-# Present the user with the list of commits that added the files currently in
+# The commit that most recently added a file or moved it to its current
+# location "owns" the file and the file "belongs to" the commit.
+#
+# Present the user with the list of commits that own the files currently in
 # the source repository's working directory and ask the user to select from a
 # menu the action to perform on a selection of these commits.
 #
-# As the files added by these commits are pending a move to the destination
-# repository, these commits will be referred to as "pending" commits.
+# As these commits' files are pending removal or a move to the destination
+# repository they will be referred to as "pending" commits.
 #
-# Actions that can be performed on a selection of pending commits include
-# moving them from the source repository to a single commit in the destination
-# repository and dropping them from the source repository.
+# Actions that can be performed on a selection of pending commits ("commit
+# operations") include moving them from the source repository to a single
+# commit in the destination repository and dropping them from the source
+# repository. Note that, by implication, a file that has been operated upon no
+# longer exists in the source repository. A file that has been operated upon
+# is called an "actioned file" and a commit whose files have all been actioned
+# an "actioned commit". It is also possible to operate on only a subset of
+# each selected commit's files instead of all of them. These are called "file
+# operations" and are selected from the "commit splitting screen"; see below
+# for more information.
 #
 # The flow of this script, in broad strokes, is as follows: for each file in
-# the source repository directory, find the hash of the commit that added it;
+# the source repository directory, find the hash of the commit it belongs to;
 # these are the pending commits. Arrange the pending commits in chronological
 # order. Display to the user the pending commits along with the files they
-# added. Let the user select one or more pending commits and an action to be
-# performed on them. Each successful action results in a commit to the source
-# and/or destination repositories and leaves both repositories in a clean
-# state. Once the action has been performed, redisplay the updated pending
-# commit list and prompt for the next action. Pushing to the remote
-# repositories, a supported operation, can be done at any time during the
-# session.
+# own. Let the user select one or more pending commits and an operation to be
+# performed on them. Each successful operation results in a commit to the
+# source and/or destination repositories and leaves both repositories in a
+# clean state. Once the operation has been performed, re-initialize the
+# pending commit list from the files in the source repository (that is, from
+# scratch), redisplay the updated pending commit list, and prompt for the next
+# action. Pushing to the remote repositories, a supported operation, can be
+# done at any time during the session. (Note that only in-memory structures
+# are updated after a file operation in the commit splitting screen -- the
+# pending commit list is only re-initialized when the user returns to the main
+# screen.)
 #
 # Two modes of operation are supported. In source-management mode, package
 # archives -- from any section -- and/or ownership manifests are migrated from
@@ -245,104 +259,125 @@ if [[ ("$mode" != "source") &&
 in the destination repository"
 fi
 
-# Find all package archives and, if in source-management mode, owner manifest
-# files in the source repository.
-#
-# Every file in a repository section directory except *.manifest is a package
-# archive and every file in the owners directory is a project or package owner
-# manifest. Therefore run find separately on each section directory and the
-# owners directory to build a list containing only package-related files.
-#
-# Store the relative to the repository directory file paths in an array used
-# to build the set of pending commits.
-#
-src_files=()
-for s in "${src_sections[@]}"; do
-  while read f; do
-    src_files+=("${f#$src_dir/}")
-  done < <(find "$src_dir/$s" -type f -not -name "*.manifest")
-done
-
-if [[ ("$mode" == "source") &&
-      -n "$src_owners"      &&
-      -d "$src_dir/$src_owners" ]]; then
-  while read f; do
-    src_files+=("${f#$src_dir/}")
-  done < <(find "$src_dir/$src_owners" -type f)
-fi
-
-# Build the set of pending commit hashes ("pending set").
-#
-# For each file in the source repository, find the most recent commit that
-# added it or moved it to its current location and store its abbreviated hash
-# (as key) inside the 'pending_set' associative array (note: unordered) and
-# (as value) inside the 'file_commits' associative array.
-#
-# 'file_commits' maps from the file path to the last commit to add it to the
-# repository. A file may have been added and removed by earlier commits and
-# could thus be migrated with the wrong commit unless care is taken (see the
-# example in the migration notes below).
-#
-# If in destination-management mode, exclude from `pending_set` those commits
-# without any package archives that match the pattern in `filter`.
-#
-declare -A pending_set
-declare -A file_commits
-for f in "${src_files[@]}"; do
-
-  # -n 1:                limit output to one commit (that is, the most recent)
-  # --diff-filter=A:     only show commits that added the specified file or
-  #                      moved it into its current location ('R' is useless
-  #                      if a path is specified)
-  # --pretty=format:%h:  output only the abbreviated commit hash
-  #
-  h="$(git -C "$src_dir" log -n 1 --diff-filter=A --pretty=format:%h -- "$f")"
-
-  # Note that the hash cannot be empty because, after our clean checks at the
-  # top, every file on disk must have been added by some commit (that is,
-  # there can be no untracked files).
-
-  # Add the commit to the pending set unless the current file is filtered out.
-  #
-  # Note: `src_files` can contain only package archives if we're in
-  # destination-management mode so there's no need to check the file type.
-  #
-  # Note: $filter must be unquoted to match as a wildcard pattern.
-  #
-  if [[ "$mode" == "source" ||
-        ("$(basename "$(dirname "$f")")" == $filter) || # Project name?
-        ("$(basename "$f")" == $filter.*) ]]; then      # Filename (with ext)?
-    pending_set["$h"]=true
-  fi
-
-  file_commits["$f"]="$h"
-done
-
-# Arrange the pending commits in the chronological order.
-#
-# Go through the most recent commits in the git log which added or
-# moved/renamed one or more files, skipping those not present in the pending
-# set and keeping count to bail out as soon as we ordered all of them.
+# Contains the hashes of the pending commits in chronological order.
 #
 pending_seq=()
-for (( i=0; i != "${#pending_set[@]}"; )); do
-  read h # The abbreviated commit hash.
 
-  # If this is a pending commit, prepend its hash to the ordered array.
+# Maps from the file path to the commit it belongs to. A file may have been
+# added and removed by earlier commits and could thus be migrated with the
+# wrong commit unless care is taken (see the example in the migration notes
+# below). Every file contained in this map exists on disk.
+#
+declare -A file_commits
+
+# Initialize global variables that depend on disk/repository state that is
+# modified by commit and file operations.
+#
+function init_globals ()
+{
+  pending_seq=()
+  file_commits=()
+
+  # Find all package archives and, if in source-management mode, owner
+  # manifest files in the source repository.
   #
-  if [ "${pending_set[$h]}" ]; then
-    pending_seq=("$h" "${pending_seq[@]}")
-    ((++i))
+  # Every file in a repository section directory except *.manifest is a
+  # package archive and every file in the owners directory is a project or
+  # package owner manifest. Therefore run find separately on each section
+  # directory and the owners directory to build a list containing only
+  # package-related files.
+  #
+  # Store the relative to the repository directory file paths in an array,
+  # `src_files`, used to build the set of pending commits.
+  #
+  # Note that directories in `src_sections` may be deleted by certain
+  # operations (for example, if the last package is migrated out of a
+  # section).
+  #
+  local src_files=()
+  local s
+  for s in "${src_sections[@]}"; do
+    if [ -d "$src_dir/$s" ]; then
+      while read f; do
+        src_files+=("${f#$src_dir/}")
+      done < <(find "$src_dir/$s" -type f -not -name "*.manifest")
+    fi
+  done
+
+  local f
+  if [[ ("$mode" == "source") &&
+          -n "$src_owners"      &&
+          -d "$src_dir/$src_owners" ]]; then
+    while read f; do
+      src_files+=("${f#$src_dir/}")
+    done < <(find "$src_dir/$src_owners" -type f)
   fi
 
-  # --diff-filter=AR:     only show commits that added or renamed files
+  # Build the set of pending commit hashes ("pending set").
   #
-done < <(git -C "$src_dir" log --diff-filter=AR --pretty=format:%h)
+  # For each file in the source repository, find the commit it belongs to and
+  # store its abbreviated hash (as key) inside the `pending_set` associative
+  # array (note: unordered) and (as value) inside the `file_commits`
+  # associative array.
+  #
+  # If in destination-management mode, exclude from `pending_set` those
+  # commits without any package archives that match the pattern in `filter`.
+  #
+  local -A pending_set=()
+  local h
+  for f in "${src_files[@]}"; do
 
-if [ "${#pending_seq[@]}" -eq 0 ]; then
-  info "good news, nothing to manage"
-  exit 0
-fi
+    # -1:                  limit output to one commit (that is, the most
+    #                      recent)
+    # --diff-filter=A:     only show commits that added the specified file or
+    #                      moved it into its current location ('R' is useless
+    #                      if a path is specified)
+    # --pretty=format:%h:  output only the abbreviated commit hash
+    #
+    h="$(git -C "$src_dir" log -1 --diff-filter=A --pretty=format:%h -- "$f")"
+
+    # Note that the hash cannot be empty because, after our clean checks at
+    # the top, every file on disk must have been added by some commit (that
+    # is, there can be no untracked files).
+
+    # Add the commit to the pending set unless the current file is filtered
+    # out.
+    #
+    # Note: `src_files` can contain only package archives if we're in
+    # destination-management mode so there's no need to check the file type.
+    #
+    # Note: $filter must be unquoted to match as a wildcard pattern.
+    #
+    if [[ "$mode" == "source" ||
+          ("$(basename "$(dirname "$f")")" == $filter) || # Project name?
+          ("$(basename "$f")" == $filter.*) ]]; then  # Filename (with ext)?
+      pending_set["$h"]=true
+    fi
+
+    file_commits["$f"]="$h"
+  done
+
+  # Arrange the pending commits in the chronological order.
+  #
+  # Go through the most recent commits in the git log which added or
+  # moved/renamed one or more files, skipping those not present in the pending
+  # set and keeping count to bail out as soon as we ordered all of them.
+  #
+  local i
+  for (( i=0; i != "${#pending_set[@]}"; )); do
+    read h # The abbreviated commit hash.
+
+    # If this is a pending commit, prepend its hash to the ordered array.
+    #
+    if [ "${pending_set[$h]}" ]; then
+      pending_seq=("$h" "${pending_seq[@]}")
+      ((++i))
+    fi
+
+    # --diff-filter=AR:     only show commits that added or renamed files
+    #
+  done < <(git -C "$src_dir" log --diff-filter=AR --pretty=format:%h)
+}
 
 # Clean the source and destination repositories by discarding uncommitted
 # changes and removing unstaged files. (Note that the source repository cannot
@@ -359,7 +394,16 @@ function cleanup ()
   fi
 }
 
-# Return the list of files a commit added to the source repository.
+# Return the subject of a git commit in the source repository.
+#
+function commit_subject () # <commit-hash>
+{
+  local h="$1"
+  git -C "$src_dir" log -n 1 --pretty=format:%s "$h"
+}
+
+# Return the list of files a commit added to or moved within the source
+# repository.
 #
 function commit_files () # <commit-hash>
 {
@@ -583,30 +627,79 @@ function remove_pkg_archives ()
   echo -n "${rv[@]}"
 }
 
-# The commit bundle associative array is the set of selected pending
-# commits. Its keys are the corresponding indexes of the 'pending_seq' array
-# (but offset by +1). Note: the reason the commit bundle is an associative
-# array is to prevent duplicates.
+# The commit bundle array is the set of selected pending commits. Its elements
+# are the corresponding indexes of the `pending_seq` array (but offset by +1).
+# The indexes are always kept in ascending and, therefore, chronological order
+# (because the commits in `pending_seq` are in chronological order).
 #
-declare -A bundle
+bundle=()
 
-# After a successful migration, reset some global state and pause to give the
-# operator a chance to look at the commits before the list of remaining
-# pending commits is displayed.
+# Contains the managed file paths belonging to commits in the commit
+# bundle. Used as the starting point for operations such as the migration and
+# dropping of commits or files.
 #
-function migrate_epilogue ()
+# These files must be grouped by commit and the commit groups ordered
+# chronologically, otherwise files could be processed in a different order
+# than they occur in the pending commit list (the `pending_seq` array). For
+# example, failing that, the commit groups/files in the commit splitting
+# screen or the file mentions in the commit messages might be in a different
+# order than they were in the main screen.
+#
+bundle_files=()
+
+# Collect the commit bundle's files into the global `bundle_files` array,
+# grouping them by commit. The commit groups are ordered chronologically to
+# match the ordering of the pending commit array, `pending_seq`.
+#
+# Include only files belonging to a commit in the bundle.
+#
+# Fail -- by leaving `bundle_files` empty -- if the commit bundle is empty or
+# any of the files are unmanaged.
+#
+function collect_bundle_files ()
 {
-  # Remove the hashes in the commit bundle from the pending sequence and clear
-  # the commit bundle.
-  #
-  local i
-  for i in "${!bundle[@]}"; do
-    unset pending_seq[i-1]
-  done
-  pending_seq=("${pending_seq[@]}") # Remove the gaps created by unset.
-  bundle=()
+  bundle_files=()
 
-  read -p "press Enter to continue"
+  local i
+  for i in "${bundle[@]}"; do
+    local h="${pending_seq[$i-1]}" # The current commit's abbreviated hash.
+
+    local f
+    while read -d '' f; do
+      # Fail (by clearing the `bundle_files` array) if the current file is
+      # unmanaged.
+      #
+      local fi=($(src_path_info "$f"))
+      if [ "${fi[0]}" == "unmanaged" ]; then
+        info "cannot include commit $i: '$f' is unmanaged"
+        bundle_files=()
+        return
+      fi
+
+      # Add this file only if it belongs to the current commit.
+      #
+      if [ "${file_commits[$f]}" == "$h" ]; then
+        bundle_files+=("$f")
+      fi
+    done < <(commit_files "$h")
+  done
+}
+
+# Print "true" to stdout if <target> equals any of the subsequent
+# arguments/words.
+#
+function contains () # <target> <word0> <word1> ...
+{
+  local k="$1"
+  shift
+
+  local w
+  for w in "$@"; do
+    if [ "$w" == "$k" ]; then
+      echo -n "true"
+      return
+    fi
+  done
 }
 
 # Migrate (all management modes):
@@ -618,9 +711,9 @@ function migrate_epilogue ()
 #
 # Note the following edge case which applies to all management modes:
 #
-#   We will need to confirm with git that each of a commit's added files were
-#   actually most recently added by that commit. For example (oldest commits
-#   first):
+#   We will need to confirm with git that each of a commit's files were
+#   actually most recently added or moved by that commit. For example (oldest
+#   commits first):
 #
 #     commit 1: add foo.tar.gz, bar.tar.gz
 #     commit 2: del foo.tar.gz
@@ -632,6 +725,10 @@ function migrate_epilogue ()
 # Source-management mode migration: migrate the selected commit bundle from
 # the source repository to the destination repository.
 #
+# Takes as input the bundle files in the global `bundle_files` array which is
+# assumed to be non-empty and to contain only managed files (package archives
+# or ownership manifests) belonging to commits in the commit bundle.
+#
 # If the migration succeeds, set the global migrate_result variable to
 # true. Otherwise, in case of failure, issue appropriate diagnostics and set
 # migrate_result to the empty string before returning. In order to ensure that
@@ -642,8 +739,6 @@ function migrate_epilogue ()
 #
 # The migration will fail if any of the following is true:
 #
-# - The commit bundle is empty.
-#
 # - Files in the commit bundle are not all from the same project (the "bundle
 #   project") or, in the case of archives, the same repository section (the
 #   "bundle section").
@@ -653,8 +748,6 @@ function migrate_epilogue ()
 # - There exists, for one or more files in the commit bundle, a duplicate or
 #   conflicting archive in any of the sections in the destination repository
 #   (see check_pkg_duplicate()).
-#
-# - Any file in the commit bundle is unmanaged.
 #
 # The migration process proceeds as follows:
 #
@@ -712,21 +805,13 @@ function migrate_src ()
 {
   migrate_result=
 
-  if [ "${#bundle[@]}" -eq 0 ]; then
-    info "no commits selected"
-    return
-  fi
-
-  # Check that every commit's files are managed packages or ownership
-  # manifests in the bundle section and/or bundle project before migrating any
-  # of them. Build the bundle's list of files as we go along, classifying them
-  # as package archives or ownership manifests based on their paths.
+  # Check that all files in the bundle are in the bundle section and/or bundle
+  # project before migrating any of them. Classify each file as a package
+  # archive or ownership manifest as we go along, based on its path.
   #
   # The bundle section is derived from the first package archive encountered
   # and the bundle project from the first package archive or owner manifest
   # encountered.
-  #
-  # Note that the bundle traversal is unordered.
   #
   local src_sect=          # Source section name.
   local src_sect_dir=      # Source section directory.
@@ -734,91 +819,69 @@ function migrate_src ()
   local pkgs=()            # The bundle's archive files.
   local owns=()            # The bundle's ownership manifests.
 
-  local i
-  for i in "${!bundle[@]}"; do
-    local h="${pending_seq[i-1]}" # The current commit's abbreviated hash.
+  local f
+  for f in "${bundle_files[@]}"; do
+    local fi=($(src_path_info "$f"))
+    local ftype="${fi[0]}" # Current file's type.
+    local fproj="${fi[1]}" # Current file's project.
 
-    # Check the current commit's files.
-    #
-    local f
-    while read -d '' f; do
-      # Derive the project and/or section names from the file path.
+    if [ "$ftype" == "ownership" ]; then
+      owns+=("$f")
+
+    elif [ "$ftype" == "archive" ]; then
+      local fsect_dir="${fi[2]}"
+      pkgs+=("$f")
+
+      # Find, in `src_sections`, the archive section name associated with the
+      # section directory extracted from the path (a value-to-key lookup).
       #
-      local fproj= # Current file's project.
-      local fi=($(src_path_info "$f"))
+      local fsect=
 
-      if [ "${fi[0]}" == "ownership" ]; then
-        if [ "${file_commits[$f]}" != "$h" ]; then
-          continue  # Ownership manifest was removed by a subsequent commit.
-        fi
-
-        fproj="${fi[1]}"
-        owns+=("$f")
-
-      elif [ "${fi[0]}" == "archive" ]; then
-        if [ "${file_commits[$f]}" != "$h" ]; then
-          continue  # Archive was removed by a subsequent commit.
-        fi
-
-        fproj="${fi[1]}"
-        local fsect_dir="${fi[2]}"
-        pkgs+=("$f")
-
-        # Find, in `src_sections`, the archive section name associated with
-        # the section directory extracted from the path (a value-to-key
-        # lookup).
-        #
-        local fsect=
-
-        # The "*" key is a catch-all for unknown submitted section names and,
-        # if present, will share a value (section directory) with one of the
-        # known section names and therefore must be skipped.
-        #
-        local k
-        for k in "${!src_sections[@]}"; do
-          if [[ ("${src_sections[$k]%/}" == "$fsect_dir") &&
+      # The "*" key is a catch-all for unknown submitted section names and, if
+      # present, will share a value (section directory) with one of the known
+      # section names and therefore must be skipped.
+      #
+      local k
+      for k in "${!src_sections[@]}"; do
+        if [[ ("${src_sections[$k]%/}" == "$fsect_dir") &&
                 ("$k" != "*") ]]; then
-            fsect="$k"    # Current file's section name.
-            break
-          fi
-        done
-
-        if [ -z "$fsect" ]; then
-          # The only way that fsect can be empty is due to a programming error
-          # or if the "*" key has a unique value -- which would be a submit
-          # config error. So it would probably be better to terminate the
-          # script.
-          #
-          error "unable to find section name for file '$f'"
+          fsect="$k"    # Current file's section name.
+          break
         fi
+      done
 
-        # Set the source section name and directory if unset; otherwise fail
-        # if the current file is not from the source section.
+      if [ -z "$fsect" ]; then
+        # The only way that fsect can be empty is due to a programming error
+        # or if the "*" key has a unique value -- which would be a submit
+        # config error. So it would probably be better to terminate the
+        # script.
         #
-        if [ -z "$src_sect" ]; then
-          src_sect="$fsect"
-          src_sect_dir="$fsect_dir"
-        elif [ "$fsect" != "$src_sect" ]; then
-          info "cannot include commit $i: '$f' is not in section $src_sect"
-          return
-        fi
-      else
-        info "cannot include commit $i: '$f' is unmanaged"
-        return
+        error "unable to find section name for file '$f'"
       fi
 
-      # Set the bundle project if unset; otherwise fail if the current file is
-      # not from the bundle project.
+      # Set the source section name and directory if unset; otherwise fail if
+      # the current file is not from the source section.
       #
-      # Note: $fproj cannot be empty here (see above).
-      #
-      if [ -z "$proj" ]; then
-        proj="$fproj"
-      elif [ "$fproj" != "$proj" ]; then
-        info "cannot include commit $i: '$f' is not in project $proj"
+      if [ -z "$src_sect" ]; then
+        src_sect="$fsect"
+        src_sect_dir="$fsect_dir"
+      elif [ "$fsect" != "$src_sect" ]; then
+        info "'$f' is not in section $src_sect"
         return
       fi
-    done < <(commit_files "$h")
+    fi
+
+    # Set the bundle project if unset; otherwise fail if the current file is
+    # not from the bundle project.
+    #
+    # Note: $fproj cannot be empty here (see above).
+    #
+    if [ -z "$proj" ]; then
+      proj="$fproj"
+    elif [ "$fproj" != "$proj" ]; then
+      info "'$f' is not in project $proj"
+      return
+    fi
   done
 
   # Finalize migration variables the values of which depend on whether the
@@ -935,7 +998,7 @@ function migrate_src ()
       dst_cmsg+="  add $name/$version"$'\n'
     else
       for ((i=0; i != "${#rv[@]}"; ++i)); do
-        dst_cmsg+="  replace $name/${rv[i]} with $version"$'\n'
+        dst_cmsg+="  replace $name/${rv[$i]} with $version"$'\n'
       done
     fi
 
@@ -988,12 +1051,19 @@ function migrate_src ()
   migrate_result=true
   trap EXIT
 
-  migrate_epilogue
+  read -p "press Enter to continue"
 }
 
 # Destination-management mode migration: migrate the package archives in the
 # selected commit bundle from the source (managed) section to its counterpart
 # section.
+#
+# Takes as input the bundle files in the global `bundle_files` array which is
+# assumed to be non-empty and to contain only managed package archives
+# belonging to commits in the commit bundle (that is, it contains no ownership
+# manifests (see below)).
+#
+# Assumes that the source and destination sections are valid.
 #
 # The general structure of this function is very similar to that of
 # migrate_src() but most of the logic is simpler. Some noteworthy differences
@@ -1013,16 +1083,12 @@ function migrate_src ()
 #
 # The migration will fail if any of the following is true:
 #
-# - The commit bundle is empty.
-#
 # - Package archives in the commit bundle are not all from the same project
 #   (the "bundle project").
 #
 # - There exists, for one or more package archives in the commit bundle, a
 #   duplicate or conflicting archive in the destination section (see
 #   check_pkg_duplicate()).
-#
-# Note that the source and destination sections are assumed to be valid.
 #
 # The migration process proceeds as follows:
 #
@@ -1047,61 +1113,30 @@ function migrate_dst ()
 {
   migrate_result=
 
-  if [ "${#bundle[@]}" -eq 0 ]; then
-    info "no commits selected"
-    return
-  fi
-
   local src_sect="$mode"                          # Source section.
   local src_sect_dir="${src_sections[$src_sect]}" # Source section directory.
   local dst_sect="${sect_cparts[$src_sect]}"      # Destination section.
   local dst_sect_dir="${dst_sections[$dst_sect]}" # Dst. section directory.
 
-  # Check that every file in the commit bundle is a managed package archive
-  # (ownership manifests are skipped) from the bundle project (taken from the
-  # path of the first file encountered). Also build the bundle's list of files
-  # as we go along.
-  #
-  # Note that the bundle traversal is unordered.
+  # Check that every package archive is from the bundle project (taken from
+  # the path of the first file encountered).
   #
   local proj=   # The bundle project.
-  local pkgs=() # The bundle's files (package archives, all).
 
-  local i
-  for i in "${!bundle[@]}"; do
-    local h="${pending_seq[i-1]}" # The current commit's abbreviated hash.
+  local f
+  for f in "${bundle_files[@]}"; do  # Note: contains only package archives.
+    local fi=($(src_path_info "$f"))
+    local fproj="${fi[1]}"  # Current file's project.
 
-    # Check the current commit's files.
+    # Set the bundle project if unset; otherwise fail if the current file is
+    # not from the bundle project.
     #
-    local f
-    while read -d '' f; do
-      local fi=($(src_path_info "$f"))
-
-      # Fail if this is an unmanaged file. Skip ownership manifests and
-      # archives deleted by subsequent commits. (Note that ownership manifests
-      # are not stored in `file_commits` in destination-management mode.)
-      #
-      if [ "${fi[0]}" == "unmanaged" ]; then
-        info "cannot include commit $i: '$f' is unmanaged"
-        return
-      elif [ "${file_commits[$f]}" != "$h" ]; then
-        continue              # Ownership manifest or deleted package archive.
-      fi
-
-      local fproj="${fi[1]}"    # Current file's project.
-
-      # Set the bundle project if unset; otherwise fail if the current file is
-      # not from the bundle project.
-      #
-      if [ -z "$proj" ]; then
-        proj="$fproj"
-      elif [ "$fproj" != "$proj" ]; then
-        info "cannot include commit $i: '$f' is not in project $proj"
-        return
-      fi
-
-      pkgs+=("$f")
-    done < <(commit_files "$h")
+    if [ -z "$proj" ]; then
+      proj="$fproj"
+    elif [ "$fproj" != "$proj" ]; then
+      info "'$f' is not in project $proj"
+      return
+    fi
   done
 
   # Migrate the bundle's files.
@@ -1113,7 +1148,7 @@ function migrate_dst ()
 
   local cmsg=                   # The detailed part of the commit message.
 
-  for f in "${pkgs[@]}"; do
+  for f in "${bundle_files[@]}"; do
     # Get the current package's name and version from its embedded manifest
     # (we already have the source project in $proj).
     #
@@ -1141,7 +1176,7 @@ function migrate_dst ()
       cmsg+="  move $name/$version"$'\n'
     else
       for ((i=0; i != "${#rv[@]}"; ++i)); do
-        cmsg+="  replace $name/${rv[i]} with $version"$'\n'
+        cmsg+="  replace $name/${rv[$i]} with $version"$'\n'
       done
     fi
 
@@ -1174,7 +1209,7 @@ function migrate_dst ()
   migrate_result=true
   trap EXIT
 
-  migrate_epilogue
+  read -p "press Enter to continue"
 }
 
 # Push local changes to the remote source and/or destination git repositories.
@@ -1204,10 +1239,12 @@ function push ()
   fi
 }
 
-# Present the list of pending commits to the user, oldest first, marking files
-# that were deleted by subsequent commits with `*` and, of those, the ones
-# that were then added back again with `!`. Files from unmanaged directories
-# are marked with `?`.
+# User interface:
+#
+# The main screen presents the list of pending commits to the user, oldest
+# first, with files that were deleted by subsequent commits marked with `*`
+# and, of those, the ones that were then added back again with `!`. Files from
+# unmanaged directories are marked with `?`.
 #
 # 1 (deadbeef) Add libfoo/1.2.3
 #
@@ -1234,45 +1271,286 @@ function push ()
 # <N> - add commit to the commit bundle
 #  m  - migrate the selected commit bundle
 #  c  - clear the selected commit bundle
+#  s  - split commit(s) (operate on selected files)
 #  p  - push source and destination repositories
 #  l  - list pending commits
-#  q  - quit (prompting to push if any actions have been taken)
+#  q  - quit (prompting to push if commits were made)
 #  ?  - print this help
 #
-# The user interaction loop.
+# The main screen operates at "commit granularity", in which each operation is
+# performed on entire commits (that is, on all of the files they own). At
+# "file granularity", on the other hand, operations are performed only on a
+# user-selected subset of the selected commits' files. To operate at file
+# granularity the user chooses, in the main menu, to split the selected
+# commits, thus switching to the "commit splitting screen". See
+# `split_commits()`, below.
 #
-# In each iteration, present the list of pending commits, display the menu of
-# actions, read the user's input, and perform the chosen action.
+
+# Print the size of a file to stdout in the human-readable form (K, M, G).
 #
+function file_size ()
+{
+  local f="$1"
+
+  # POSIX specifies the output of `ls -l` so this should be portable. -h turns
+  # on human-readable output and is present on Linux, FreeBSD, and Mac OS.
+  #
+  echo -n "$(ls -lh "$src_dir/$f" | cut -d ' ' -f 5)"
+}
+
+# Show the commit splitting screen: let the user select and operate on
+# specific files in the commit bundle (file granularity).
+#
+# Remove all but the selected files from `bundle_files` -- the global array
+# used as input to the commit and file operations -- before performing an
+# operation, and populate it with the unselected files afterwards.
+#
+# Assumes that the files in `bundle_files` are grouped by commit and that they
+# are all existent (that is, present in `file_commits`) and managed.
+#
+# This screen's layout is near identical to that of the main screen -- each
+# commit's files, grouped under the commit heading, with commit groups in
+# chronological order -- except that here the files are numbered instead of
+# the commits. The user is presented with a menu similar to the one in the
+# main screen including the selection of files by number and operations such
+# as `migrate` and `drop`.
+#
+# @@ Feature idea: invert selection. That is, if user wants to exclude rather
+#    than include a file, can add it to the selection and then invert the
+#    selection.
+#
+#    Also: add 'push' and 'quit script' ('Q') options? Returning to the main
+#    menu is a little annoying, but perhaps that's just because I've been
+#    running this script so frequently.
+#
+function split_commits ()
+{
+  # The current file selection. Stores indexes into `bundle_files`.
+  #
+  local fsel=()
+
+  while true; do
+    if [ "${#bundle_files[@]}" -ne 0 ]; then
+      # Print the commits followed by their files. Because `bundle_files` is
+      # grouped by commit we know we are on a new commit when the current
+      # file's commit hash differs from that of its predecessor.
+      #
+      local h=  # Hash of commit to which the current subset of files belong.
+      local i
+      for i in "${!bundle_files[@]}"; do
+        local f="${bundle_files[$i]}"  # Current file.
+        local fh="${file_commits[$f]}" # Current file's commit hash.
+
+        if [ "$fh" != "$h" ]; then # New commit so first print its heading.
+          h="$fh"
+          printf "\n%s %s\n\n" "$fh" "$(commit_subject "$fh")" >&2
+        fi
+
+        # Get this file's size if it's a package archive.
+        #
+        local sz=  # File size.
+        local fi=($(src_path_info "$f"))
+        if [ "${fi[0]}" == "archive" ]; then
+          sz="  $(file_size "$f")"
+        fi
+
+        # Print the current file's number (left-padded to 3 columns), path,
+        # and size (if set).
+        #
+        printf "%3d %s%s\n" "$((i+1))" "$f" "$sz" >&2
+      done
+    else
+      info "no files in commit bundle"
+    fi
+
+    # Used to restore the unactioned files into `bundle_files` after an
+    # operation (see update_bundle_files(), below). We need to do it because
+    # our migrate functions operate on (global) bundle_files.
+    #
+    local unactioned_files=()
+
+    # Collect the selected files into `bundle_files` just before an
+    # operation. But first save its contents in `unactioned_files`.
+    #
+    # Note that after this function returns the indexes in `fsel` are valid
+    # for `unactioned_files` but not `bundle_files`.
+    #
+    function collect_selected_files ()
+    {
+      unactioned_files=("${bundle_files[@]}")
+
+      local r=()
+      local i
+      for i in "${fsel[@]}"; do
+        r+=("${bundle_files[$i-1]}")
+      done
+      bundle_files=("${r[@]}")
+    }
+
+    # Put the unactioned bundle files into `bundle_files` after an
+    # operation. If the operation succeeded the unactioned files are the
+    # unselected ones and if it failed it's the union of the selected and
+    # unselected files.
+    #
+    function update_bundle_files ()  # <operation-result>
+    {
+      local opres="$1"
+
+      if [ "$opres" ]; then
+        # Remove the selected/actioned files from `unactioned_files`.
+        #
+        local i
+        for i in "${fsel[@]}"; do
+          unset unactioned_files[$i-1]
+        done
+      fi
+
+      bundle_files=("${unactioned_files[@]}")
+    }
+
+    # Display the menu/prompt, build the file selection, and perform the
+    # requested actions. Breaking out of this loop prints the bundle's files
+    # again.
+    #
+    while true; do
+      # Print the file selection and menu/prompt. Sort the selected files into
+      # ascending order (for display and to maintain the ordering of
+      # `bundle_files`, which `fsel` is the source for).
+      #
+      fsel=($(sed 's/ /\n/g' <<<"${fsel[*]}" | sort -))
+      local opt
+      read -p $'\n'"[${fsel[*]}][<N>,m,c,l,q,?]: " opt
+
+      # Perform the selected action.
+      #
+      case "$opt" in
+        # Add file <N> to the selection.
+        #
+        [0-9]*)
+          if [[ ("$opt" =~ ^[1-9][0-9]*$) && -v bundle_files[$opt-1] ]]; then
+            if [ ! "$(contains "$opt" "${fsel[@]}")" ]; then
+              fsel+=("$opt")
+              info "file $opt added to selection"
+            else
+              info "file $opt already selected"
+            fi
+          else
+            info "non-existent file number $opt"
+          fi
+          ;;
+        # Migrate selected files.
+        #
+        m)
+          if [ "${#fsel[@]}" -ne 0 ]; then
+            collect_selected_files
+            if [ "$mode" == "source" ]; then
+              migrate_src
+            else
+              migrate_dst
+            fi
+
+            update_bundle_files "$migrate_result"
+
+            if [ "$migrate_result" ]; then
+              fsel=()
+              need_push=true
+              break
+            fi
+          else
+            info "no files selected"
+          fi
+          ;;
+        # Drop selected files.
+        # d)
+        # if [ "${#fsel[@]}" -ne 0 ]; then
+        #   collect_selected_files
+        #   drop
+        #   update_bundle_files "$migrate_result"
+        #   ...
+        # else
+        #   info "no files selected"
+        # fi
+        # ;;
+
+        # Clear the file selection (and print the file list again).
+        #
+        c)
+          fsel=()
+          break
+          ;;
+        # Print the file list.
+        #
+        l) break ;;
+        # Quit (returning to the main screen).
+        #
+        q)
+          return
+          ;;
+        # ? or invalid option: print menu.
+        #
+        *)
+          cat <<EOF >&2
+
+ <N> - add file to selection
+  m  - migrate the selected files
+  c  - clear the file selection
+  l  - list files
+  q  - quit (back to main menu)
+  ?  - print this help
+EOF
+          ;;
+      esac
+    done
+  done
+}
+
 # True if any changes have been made to the source and/or destination git
 # repositories (in which case the user will be asked whether or not to push
 # before quitting).
 #
 need_push=
 
+init=true  # True if the global state needs to be re-initialized.
+
+# The main screen's user interaction loop.
+#
+# In each iteration, present the list of pending commits, display the menu of
+# actions, read the user's input, and perform the chosen action.
+#
 while true; do
-  # Show the pending commits.
+
+  # (Re)initialize the global state if necessary. The idea is that instead of
+  # performing complex house-keeping, after certain operations (e.g.,
+  # migration) we will just re-initialize the state from scratch.
   #
-  if [ "${#pending_seq[@]}" -eq 0 ]; then
-    info "no more pending commits"
+  if [ "$init" ]; then
+    init_globals
+
+    if [ "${#pending_seq[@]}" -eq 0 ]; then
+      info "good news, nothing to manage"
+      if [ ! "$need_push" ]; then
+        exit 0
+      fi
+    fi
+
+    init=
+    bundle=()
   fi
 
-  for ((i=0; i != "${#pending_seq[@]}"; i++)); do
+  for i in "${!pending_seq[@]}"; do
     h="${pending_seq[$i]}"
 
     # Print commit number, hash, and subject.
     #
-    # The commit number is left-padded with 0s to 3 digits. Prefix with a
-    # newline to separate the first commit from the git-pull output and the
-    # rest from the previous commit info block.
+    # Prefix with a newline to separate the first commit from the git-pull
+    # output and the rest from the previous commit info block.
     #
-    subj="$(git -C "$src_dir" log -n 1 --pretty=format:%s "$h")"
-    printf "\n%d (%s) %s\n\n" "$((i+1))" "$h" "$subj" >&2
+    printf "\n%d (%s) %s\n\n" "$((i+1))" "$h" "$(commit_subject "$h")" >&2
 
     # Print this commit's files.
     #
-    # Fetch from the git repository the list of files added or moved by the
-    # current commit and print each one's path.
+    # Fetch from the git repository the current commit's files and print each
+    # one's path.
     #
     # Mark files that cannot be migrated:
     #
@@ -1299,15 +1577,11 @@ while true; do
         # File is managed.
 
         # If this file is a package archive which exists (that is, it's in
-        # `file_commits`), get its size in the human-readable form.
+        # `file_commits`), get its size.
         #
         sz=  # File size.
         if [[ ("$ftype" == "archive") && -v file_commits["$f"] ]]; then
-          # POSIX specifies the output of `ls -l` so this should be
-          # portable. -h turns on human-readable output (K, M, G) and is
-          # present on Linux, FreeBSD, and Mac OS.
-          #
-          sz="$(ls -lh "$src_dir/$f" | cut -d ' ' -f 5)"
+          sz="$(file_size "$f")"
         fi
 
         # Note that, in destination-management mode, there can be no ownership
@@ -1321,12 +1595,17 @@ while true; do
           # File was deleted and never added again and, if we're in
           # destination-management mode, is not an ownership manifest.
           #
+          # Note that actioned files of partially actioned commits will also
+          # appear this way.
+          #
           info "* $f"
         fi
       fi
     done < <(commit_files "$h")
   done
 
+  # The main screen's prompt loop.
+  #
   # Prompt the user for the action (showing the current bundle), get user
   # input, and perform the selected action.
   #
@@ -1334,7 +1613,8 @@ while true; do
   # offer to migrate if the bundle array is empty, etc) but let's not
   # complicate the logic.
   #
-  # Breaking out of this loop prints the pending commit list again.
+  # Breaking out of this loop re-initializes the global state if `init` is
+  # true and reprints the pending commit list.
   #
   while true; do
     # Sort commit bundle in ascending order.
@@ -1347,19 +1627,20 @@ while true; do
     # IFS) because neither space nor tab characters (the other members of IFS)
     # can occur in the keys.
     #
-    bundle_sorted=($(sed 's/ /\n/g' <<<"${!bundle[*]}" | sort -))
+    bundle=($(sed 's/ /\n/g' <<<"${bundle[*]}" | sort -))
 
     printf "\n"
-    read -p "[${bundle_sorted[*]}][<N>,m,c,p,l,q,?]: " opt
+    read -p "[${bundle[*]}][<N>,m,c,s,p,l,q,?]: " opt
 
     case "$opt" in
       # Add commit to bundle.
       #
       [0-9]*)
-        if [[ ("$opt" -gt 0) && ("$opt " -le "${#pending_seq[@]}") ]]; then
-          if [ ! -v bundle["$opt"] ]; then
-            bundle["$opt"]=true
-            info "commit $opt (${pending_seq[$opt-1]}) added to selected bundle"
+        if [[ ("$opt" =~ ^[1-9][0-9]*$) && -v pending_seq[$opt-1] ]]; then
+          if [ ! "$(contains "$opt" "${bundle[@]}")" ]; then
+            bundle+=("$opt")
+            info "commit $opt (${pending_seq[$opt-1]}) \
+added to selected bundle"
           else
             info "commit $opt is already in the bundle"
           fi
@@ -1370,15 +1651,44 @@ while true; do
       # Migrate the commit bundle.
       #
       m)
-        if [ "$mode" == "source" ]; then
-          migrate_src
-        else
-          migrate_dst
-        fi
+        if [ "${#bundle[@]}" -ne 0 ]; then
+          collect_bundle_files  # Prints error if `bundle_files` left empty.
 
-        if [ "$migrate_result" ]; then
-          need_push=true
-          break
+          if [ "${#bundle_files[@]}" -ne 0 ]; then
+            if [ "$mode" == "source" ]; then
+              migrate_src
+            else
+              migrate_dst
+            fi
+            if [ "$migrate_result" ]; then
+              need_push=true
+              init=true
+              break
+            fi
+          fi
+        else
+          info "no commits selected"
+        fi
+        ;;
+      # Show commit splitting screen (operate on a selection of the commit
+      # bundle's files).
+      #
+      s)
+        if [ "${#bundle[@]}" -ne 0 ]; then
+          collect_bundle_files  # Prints error if `bundle_files` left empty.
+
+          if [ "${#bundle_files[@]}" -ne 0 ]; then
+            split_commits
+
+            # Note that the global state is re-initialized even if nothing was
+            # done in the commit-splitting screen but these should be the
+            # minority of cases.
+            #
+            init=true
+            break
+          fi
+        else
+          info "no commits selected"
         fi
         ;;
       # Clear the commit bundle.
@@ -1429,14 +1739,15 @@ while true; do
       # ? or invalid option: print menu.
       #
       *)
-        cat <<-EOF
+        cat <<EOF
 
  <N> - add commit to the commit bundle
   m  - migrate the selected commit bundle
   c  - clear the selected commit bundle
+  s  - split commit(s) (operate on selected files)
   p  - push source and destination repositories
   l  - list pending commits
-  q  - quit (prompting to push if any actions have been taken)
+  q  - quit (prompting to push if commits were made)
   ?  - print this help
 EOF
         ;;
