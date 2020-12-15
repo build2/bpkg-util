@@ -7,7 +7,8 @@
 # license   : MIT; see accompanying LICENSE file
 
 # Interactively migrate packages and/or ownership manifests from a source git
-# repository to a destination git repository.
+# repository to a destination git repository or drop them from the source
+# repository.
 #
 # The commit that most recently added a file or moved it to its current
 # location "owns" the file and the file "belongs to" the commit.
@@ -22,13 +23,11 @@
 # Actions that can be performed on a selection of pending commits ("commit
 # operations") include moving them from the source repository to a single
 # commit in the destination repository and dropping them from the source
-# repository. Note that, by implication, a file that has been operated upon no
-# longer exists in the source repository. A file that has been operated upon
-# is called an "actioned file" and a commit whose files have all been actioned
-# an "actioned commit". It is also possible to operate on only a subset of
-# each selected commit's files instead of all of them. These are called "file
-# operations" and are selected from the "commit splitting screen"; see below
-# for more information.
+# repository. A file that has been operated upon is called an "actioned file"
+# and a commit whose files have all been actioned an "actioned commit". It is
+# also possible to operate on only a subset of each selected commit's files
+# instead of all of them. These are called "file operations" and are selected
+# from the "commit splitting screen"; see below for more information.
 #
 # The flow of this script, in broad strokes, is as follows: for each file in
 # the source repository directory, find the hash of the commit it belongs to;
@@ -43,18 +42,19 @@
 # action. Pushing to the remote repositories, a supported operation, can be
 # done at any time during the session. (Note that only in-memory structures
 # are updated after a file operation in the commit splitting screen -- the
-# pending commit list is only re-initialized when the user returns to the main
-# screen.)
+# pending commit list is only re-initialized (from disk) when the user returns
+# to the main screen.)
 #
 # Two modes of operation are supported. In source-management mode, package
-# archives -- from any section -- and/or ownership manifests are migrated from
-# the source repository to the destination repository. In
-# destination-management mode, package archives (only) are migrated from one
-# of the sections in the destination repository to its counterpart section
-# (also in the destination repository). These mode-specific source directories
-# are called "managed directories" and the files they contain "managed files",
-# excluding those with an invalid path (project component is missed, etc); any
-# other directory or file is "unmanaged".
+# archives -- from any section -- and/or ownership manifests are dropped from
+# the source repository or migrated to the destination repository. In
+# destination-management mode, starting from one of the sections in the
+# destination repository, package archives or ownership manifests are dropped,
+# or package archives (not ownership manifests) migrated to its counterpart
+# section (also in the destination repository). These mode-specific source
+# directories are called "managed directories" and the files they contain
+# "managed files", excluding those with an invalid path (project component is
+# missed, etc); any other directory or file is "unmanaged".
 #
 # The destination-management mode is actually just a name used to refer to a
 # number of more specific, near-identical modes distinguished only by the
@@ -75,12 +75,26 @@
 # --testing[=<filter>]
 #
 #   Enter the testing-management mode: manage the testing->stable transitions
-#   in the destination repository.
+#   in, or drop commits and/or files from, the destination repository.
 #
 # --stable[=<filter>]
 #
-#   Enter the stable-management mode: manage the stable->legacy transitions
-#   in the destination repository.
+#   Enter the stable-management mode: manage the stable->legacy transitions in
+#   the destination repository. Note that commits/files cannot be dropped in
+#   this mode.
+#
+# --alpha[=<filter>]
+#
+#   Enter the alpha-management mode: drop commits and/or files from the alpha
+#   section in the destination repository.
+#
+# --beta[=<filter>]
+#
+#   Enter the beta-management mode: drop commits and/or files from the beta
+#   section in the destination repository.
+#
+# If none of the above modes are specified, operate in the source-management
+# mode.
 #
 # If <filter> is specified, then it is used to narrow down the list of commits
 # to only those that contain packages with project name or package name and
@@ -90,9 +104,6 @@
 #   --stable=libexpat-1.2.3
 #   --stable=libexpat-2.*
 #
-# If neither --testing nor --stable are specified, operate in the
-# source-management mode.
-#
 # Arguments:
 #
 # <dir> The directory into which the source and destination repositories have
@@ -100,8 +111,8 @@
 #
 usage="usage: $0 [<options>] [<dir>]"
 
-# Source/destination repository inside <dir>. Note: also used in commit
-# messages.
+# The names of the source and destination repositories inside <dir>. Note:
+# also used in commit messages.
 #
 src_repo_name=queue
 dst_repo_name=public
@@ -150,7 +161,30 @@ while [ "$#" -gt 0 ]; do
       mode="stable"
       shift
       ;;
-    *) break ;;
+    --alpha=*)
+      filter="${1#--alpha=}"
+      ;&
+    --alpha)
+      mode="alpha"
+      shift
+      ;;
+    --beta=*)
+      filter="${1#--beta=}"
+      ;&
+    --beta)
+      mode="beta"
+      shift
+      ;;
+    # Catch invalid options.
+    #
+    -*)
+      error "unknown option: $1"
+      ;;
+    # <dir> or end of options.
+    #
+    *)
+      break
+      ;;
   esac
 done
 
@@ -165,8 +199,11 @@ else
 fi
 
 # If in one of the destination-management modes, set the source repository
-# name to that of the destination repository.
+# name to that of the destination repository. But first save the real source
+# repository directory because we sometimes need to operate on it even if in
+# destination-management mode.
 #
+real_src_dir="$dir/$src_repo_name"  # The real source repository directory.
 if [ "$mode" != "source" ]; then
   src_repo_name="$dst_repo_name"
 fi
@@ -174,8 +211,8 @@ fi
 # The source and destination package repository directories.
 #
 # Note that, throughout this script, any path not explicitly prefixed with
-# "$src_dir/" or "$dst_dir/" is relative to the root of the source or
-# destination package repositories.
+# "$src_dir/", "$dst_dir/", or "$real_src_dir/" is relative to the root of the
+# source or destination package repositories.
 #
 src_dir="$dir/$src_repo_name"
 dst_dir="$dir/$dst_repo_name"
@@ -201,9 +238,10 @@ fi
 # Use run() to show the user that git is the source of the diagnostics.
 # "Already up to date", for example, is too vague.
 #
-if [ "$mode" == "source" ]; then
-  run git -C "$src_dir" pull >&2
-fi
+# Always pull the real source repository because we sometimes need to operate
+# on it even if in destination-management mode.
+#
+run git -C "$real_src_dir" pull >&2
 run git -C "$dst_dir" pull >&2
 
 # Load the source and destination repositories' submit configurations (section
@@ -218,6 +256,9 @@ run git -C "$dst_dir" pull >&2
 # dst_sections. Otherwise, in source-management mode, store all source and
 # destination section directories.
 #
+# Normalize section directory paths by removing trailing slashes if they
+# exist.
+#
 declare owners
 declare -A sections
 source "$src_dir/submit.config.bash"
@@ -227,7 +268,7 @@ declare -A src_sections
 
 for s in "${!sections[@]}"; do
   if [[ ("$mode" == "source") || ("$s" == "$mode") ]]; then
-    src_sections["$s"]="${sections[$s]}"
+    src_sections["$s"]="${sections[$s]%/}" # Remove trailing '/', if any.
   fi
 done
 
@@ -237,6 +278,9 @@ source "$dst_dir/submit.config.bash"
 
 # Section counterparts.
 #
+# Used only in destination-management mode. If a section has no counterpart
+# then migration from it is disabled.
+#
 declare -A sect_cparts=(["testing"]="stable"
                         ["stable"]="legacy")
 
@@ -244,19 +288,21 @@ dst_owners="$owners"
 declare -A dst_sections
 for s in "${!sections[@]}"; do
   if [[ ("$mode" == "source") || ("$s" == "${sect_cparts[$mode]}") ]]; then
-    dst_sections["$s"]="${sections[$s]}"
+    dst_sections["$s"]="${sections[$s]%/}" # Remove trailing '/', if any.
   fi
 done
 
-# Fail if in destination-management mode and the source and/or destination
-# section is not configured for the destination repository. (The equivalent
-# source-management mode checks can only be done later.)
+# Fail if in destination-management mode and the source section is not
+# configured for the destination repository. (The equivalent source-management
+# mode checks can only be done later.)
 #
-if [[ ("$mode" != "source") &&
-      (! -v src_sections["$mode"] ||
-       ! -v dst_sections["${sect_cparts[$mode]}"]) ]]; then
-  error "section '$mode' and/or '${sect_cparts[$mode]}' not configured \
-in the destination repository"
+# Note that checking whether the non-existence of a counterpart section is an
+# error can only be done later because some operations support sections
+# without a counterpart (for example, dropping from the alpha or beta sections
+# in destination-management mode).
+#
+if [[ ("$mode" != "source") && ! -v src_sections["$mode"] ]]; then
+  error "section '$mode' not configured in the destination repository"
 fi
 
 # Contains the hashes of the pending commits in chronological order.
@@ -278,8 +324,8 @@ function init_globals ()
   pending_seq=()
   file_commits=()
 
-  # Find all package archives and, if in source-management mode, owner
-  # manifest files in the source repository.
+  # Find all package archives and owner manifest files in the source
+  # repository.
   #
   # Every file in a repository section directory except *.manifest is a
   # package archive and every file in the owners directory is a project or
@@ -295,19 +341,20 @@ function init_globals ()
   # section).
   #
   local src_files=()
+
   local s
   for s in "${src_sections[@]}"; do
-    if [ -d "$src_dir/$s" ]; then
+    local d="$src_dir/$s"
+    if [ -d "$d" ]; then
+      local f
       while read f; do
         src_files+=("${f#$src_dir/}")
-      done < <(find "$src_dir/$s" -type f -not -name "*.manifest")
+      done < <(find "$d" -type f -not -name "*.manifest")
     fi
   done
 
-  local f
-  if [[ ("$mode" == "source") &&
-          -n "$src_owners"      &&
-          -d "$src_dir/$src_owners" ]]; then
+  if [[ -n "$src_owners" && -d "$src_dir/$src_owners" ]]; then
+    local f
     while read f; do
       src_files+=("${f#$src_dir/}")
     done < <(find "$src_dir/$src_owners" -type f)
@@ -354,6 +401,12 @@ function init_globals ()
       pending_set["$h"]=true
     fi
 
+    # Add the file and commit to `file_commits` even if the current commit was
+    # not added to `pending_set` above otherwise this file could get
+    # incorrectly attributed to an earlier, unfiltered commit (consider the
+    # edge case example under the general migration comments (above
+    # migrate_src()) with a filter of "bar.*").
+    #
     file_commits["$f"]="$h"
   done
 
@@ -430,7 +483,8 @@ function commit_files () # <commit-hash>
 # <path> must be relative to the source repository directory (`src_dir`).
 #
 # If the path refers to a managed archive file in the source repository, then
-# print `archive <project> <section>`.
+# print `archive <project> <section-dir>`. The section directory will be
+# relative to the source repository directory.
 #
 # Otherwise, if the path refers to a managed ownership manifest file in the
 # source repository, then print `ownership <project>`.
@@ -634,9 +688,9 @@ function remove_pkg_archives ()
 #
 bundle=()
 
-# Contains the managed file paths belonging to commits in the commit
-# bundle. Used as the starting point for operations such as the migration and
-# dropping of commits or files.
+# Contains the managed file paths belonging to commits in the commit bundle.
+# Used as the starting point for operations such as the migration and dropping
+# of commits or files.
 #
 # These files must be grouped by commit and the commit groups ordered
 # chronologically, otherwise files could be processed in a different order
@@ -702,6 +756,38 @@ function contains () # <target> <word0> <word1> ...
   done
 }
 
+# Return the section name corresponding to the section directory specified by
+# <section-dir>.
+#
+# If the section name exists, print it to stdout; otherwise exit the script
+# with a diagnostic message and an error status code.
+#
+# The section name is the key which indexes <section-dir> in `src_sections`,
+# so this is a value-to-key lookup.
+#
+# Fail by exiting the script because a failed search can only result from a
+# programming error or a bad repository submit configuration (for example, a
+# "*" key with a unique value (see below)).
+#
+function src_section_name () # <section-dir>
+{
+  local sd="$1" # Section directory.
+
+  # The "*" key is a catch-all for unknown submitted section names and, if
+  # present, will share a value (section directory) with one of the known
+  # section names and therefore must be skipped.
+  #
+  local k
+  for k in "${!src_sections[@]}"; do
+    if [[ ("${src_sections[$k]}" == "$sd") && ("$k" != "*") ]]; then
+      echo -n "$k"
+      return
+    fi
+  done
+
+  error "no source section name found for directory '$sd'"
+}
+
 # Migrate (all management modes):
 #
 # Files belonging to one or more user-selected pending commits are moved from
@@ -729,13 +815,13 @@ function contains () # <target> <word0> <word1> ...
 # assumed to be non-empty and to contain only managed files (package archives
 # or ownership manifests) belonging to commits in the commit bundle.
 #
-# If the migration succeeds, set the global migrate_result variable to
+# If the migration succeeds, set the global `operation_result` variable to
 # true. Otherwise, in case of failure, issue appropriate diagnostics and set
-# migrate_result to the empty string before returning. In order to ensure that
-# both repositories are left clean if any of the files fail to be migrated, an
-# EXIT signal handler that discards all uncommitted changes is installed right
-# before the migration proper begins, and uninstalled when all files have been
-# migrated.
+# `operation_result` to the empty string before returning. In order to ensure
+# that both repositories are left clean if any of the files fail to be
+# migrated, an EXIT signal handler that discards all uncommitted changes is
+# installed right before the migration proper begins, and uninstalled when all
+# files have been migrated.
 #
 # The migration will fail if any of the following is true:
 #
@@ -748,6 +834,10 @@ function contains () # <target> <word0> <word1> ...
 # - There exists, for one or more files in the commit bundle, a duplicate or
 #   conflicting archive in any of the sections in the destination repository
 #   (see check_pkg_duplicate()).
+#
+# - The migration would overwrite ownership info in the destination
+#   repository. (Currently ownership is updated by modifying the files
+#   directly.)
 #
 # The migration process proceeds as follows:
 #
@@ -762,8 +852,8 @@ function contains () # <target> <word0> <word1> ...
 #     beta  -> beta
 #     stable -> testing|stable
 #
-#   Package archives may be removed and ownership manifests overwritten at the
-#   destination. Candidate files for replacement are selected as follows:
+#   Package archives may be removed at the destination. Candidate files for
+#   replacement are selected as follows:
 #
 #   - In the alpha and beta sections, any package archive files in the
 #     destination section directory belonging to the same package are
@@ -772,11 +862,6 @@ function contains () # <target> <word0> <word1> ...
 #   - In other sections, any package archives in the destination section
 #     directory with the same name and version but a different revision
 #     (currently whether lower or higher) are replaced.
-#
-#   - Project and package ownership manifests will be replaced (that is,
-#     simply overwritten) at the destination with any ownership manifests
-#     added by the commit bundle because their presence implies that ownership
-#     information has changed.
 #
 #   Stage (but don't commit) the removal of the files from the source
 #   repository and their addition to the destination repository.
@@ -803,20 +888,19 @@ function contains () # <target> <word0> <word1> ...
 #
 function migrate_src ()
 {
-  migrate_result=
+  operation_result=
 
   # Check that all files in the bundle are in the bundle section and/or bundle
   # project before migrating any of them. Classify each file as a package
   # archive or ownership manifest as we go along, based on its path.
   #
   # The bundle section is derived from the first package archive encountered
-  # and the bundle project from the first package archive or owner manifest
-  # encountered.
+  # and the bundle project from the first package archive or ownership
+  # manifest encountered.
   #
   local src_sect=          # Source section name.
-  local src_sect_dir=      # Source section directory.
   local proj=              # The bundle (source) project.
-  local pkgs=()            # The bundle's archive files.
+  local pkgs=()            # The bundle's package archives.
   local owns=()            # The bundle's ownership manifests.
 
   local f
@@ -829,42 +913,17 @@ function migrate_src ()
       owns+=("$f")
 
     elif [ "$ftype" == "archive" ]; then
-      local fsect_dir="${fi[2]}"
       pkgs+=("$f")
 
-      # Find, in `src_sections`, the archive section name associated with the
-      # section directory extracted from the path (a value-to-key lookup).
-      #
-      local fsect=
+      local fsect_dir="${fi[2]}"               # Section dir from file path.
+      local fsect                              # File's src section name.
+      fsect="$(src_section_name "$fsect_dir")" # Exits script on failure.
 
-      # The "*" key is a catch-all for unknown submitted section names and, if
-      # present, will share a value (section directory) with one of the known
-      # section names and therefore must be skipped.
-      #
-      local k
-      for k in "${!src_sections[@]}"; do
-        if [[ ("${src_sections[$k]%/}" == "$fsect_dir") &&
-                ("$k" != "*") ]]; then
-          fsect="$k"    # Current file's section name.
-          break
-        fi
-      done
-
-      if [ -z "$fsect" ]; then
-        # The only way that fsect can be empty is due to a programming error
-        # or if the "*" key has a unique value -- which would be a submit
-        # config error. So it would probably be better to terminate the
-        # script.
-        #
-        error "unable to find section name for file '$f'"
-      fi
-
-      # Set the source section name and directory if unset; otherwise fail if
-      # the current file is not from the source section.
+      # Set the source section name if unset; otherwise fail if the current
+      # file is not from the source section.
       #
       if [ -z "$src_sect" ]; then
         src_sect="$fsect"
-        src_sect_dir="$fsect_dir"
       elif [ "$fsect" != "$src_sect" ]; then
         info "'$f' is not in section $src_sect"
         return
@@ -873,8 +932,6 @@ function migrate_src ()
 
     # Set the bundle project if unset; otherwise fail if the current file is
     # not from the bundle project.
-    #
-    # Note: $fproj cannot be empty here (see above).
     #
     if [ -z "$proj" ]; then
       proj="$fproj"
@@ -945,8 +1002,8 @@ function migrate_src ()
   # the destination repository directory.
   #
   # Note that the source and destination sections and owners directories may
-  # differ (as they do in these examples) which is why those components must
-  # be specified in both the source and destination paths.
+  # differ which is why those components must be specified in both the source
+  # and destination paths.
   #
   # Move the file from the source repository directory to the destination
   # repository directory, creating directories if required; stage the addition
@@ -1011,24 +1068,23 @@ function migrate_src ()
   # only remove ownership manifests from the source repository (that is, don't
   # migrate).
   #
+  # Fail if an ownership manifest already exists in the destination
+  # repository.
+  #
   for f in "${owns[@]}"; do
     src_cmsg+="  remove $f"$'\n'
 
     if [ -n "$dst_owners" ]; then
       local dp=$(dirname "${f/$src_owners/$dst_owners}")  # Destination path.
+      local fn=$(basename "$f")                           # File name.
 
-      # Let the commit message reflect whether this is a new ownership
-      # manifest or is replacing an existent one.
-      #
-      local fn=$(basename "$f")
-      if [ ! -e "$dst_dir/$dp/$fn" ]; then
-        dst_cmsg+="  add $dp/$fn"$'\n'
-      else
-        dst_cmsg+="  update $dp/$fn"$'\n'
+      if [ -f "$dst_dir/$dp/$fn" ]; then
+        error "$f already exists at $dst_dir/$dp/$fn"
       fi
 
+      dst_cmsg+="  add $dp/$fn"$'\n'
       migrate_file "$f" "$dp"
-    else
+    else  # Ownership authentication disabled in the destination repository.
       run git -C "$src_dir" rm --quiet "$f"
     fi
   done
@@ -1048,7 +1104,7 @@ function migrate_src ()
   # All files have been migrated successfully so set the result and clear the
   # EXIT trap.
   #
-  migrate_result=true
+  operation_result=true
   trap EXIT
 
   read -p "press Enter to continue"
@@ -1056,12 +1112,11 @@ function migrate_src ()
 
 # Destination-management mode migration: migrate the package archives in the
 # selected commit bundle from the source (managed) section to its counterpart
-# section.
+# section and skip ownership manifests (with a notification message).
 #
 # Takes as input the bundle files in the global `bundle_files` array which is
-# assumed to be non-empty and to contain only managed package archives
-# belonging to commits in the commit bundle (that is, it contains no ownership
-# manifests (see below)).
+# assumed to be non-empty and to contain only managed files belonging to
+# commits in the commit bundle.
 #
 # Assumes that the source and destination sections are valid.
 #
@@ -1071,8 +1126,8 @@ function migrate_src ()
 #
 # - Only the destination repository is involved.
 #
-# - All managed files in the commit bundle are package archives (ownership
-#   manifests stay where they are and are therefore skipped/ignored).
+# - Ownership manifests cannot be migrated in destination-management mode and
+#   are skipped.
 #
 # - All managed package archives in the commit bundle are known to be in the
 #   same section (because all files outside of the managed section are
@@ -1083,17 +1138,22 @@ function migrate_src ()
 #
 # The migration will fail if any of the following is true:
 #
-# - Package archives in the commit bundle are not all from the same project
-#   (the "bundle project").
+# - Files in the commit bundle are not all from the same project (the "bundle
+#   project").
 #
 # - There exists, for one or more package archives in the commit bundle, a
 #   duplicate or conflicting archive in the destination section (see
 #   check_pkg_duplicate()).
 #
+# - Migration from the specified source section is not supported.
+#
+# - The file selection contained no package archives.
+#
 # The migration process proceeds as follows:
 #
 # - Move files: all of the package archives in the selected commit bundle are
-#   moved from the source section to the destination section.
+#   moved from the source section to the destination section. Ownership
+#   manifests are skipped with a notification message.
 #
 #   Any package archives in the destination section directory with the same
 #   name and version but a different revision (currently whether lower or
@@ -1111,21 +1171,32 @@ function migrate_src ()
 #
 function migrate_dst ()
 {
-  migrate_result=
+  operation_result=
 
   local src_sect="$mode"                          # Source section.
   local src_sect_dir="${src_sections[$src_sect]}" # Source section directory.
+
+  # Fail if the source section has no counterpart, in which case migration
+  # from it is not supported.
+  #
+  if [ ! -v sect_cparts["$src_sect"] ]; then
+    info "migration from $src_sect not supported"
+    return
+  fi
+
   local dst_sect="${sect_cparts[$src_sect]}"      # Destination section.
   local dst_sect_dir="${dst_sections[$dst_sect]}" # Dst. section directory.
 
-  # Check that every package archive is from the bundle project (taken from
-  # the path of the first file encountered).
+  # Check that every file is from the bundle project (taken from the path of
+  # the first file encountered) and skip ownership manifests.
   #
-  local proj=   # The bundle project.
+  local proj=  # The bundle project.
 
-  local f
-  for f in "${bundle_files[@]}"; do  # Note: contains only package archives.
+  local i
+  for i in "${!bundle_files[@]}"; do
+    local f="${bundle_files[$i]}"
     local fi=($(src_path_info "$f"))
+    local ftype="${fi[0]}"  # Current file's type.
     local fproj="${fi[1]}"  # Current file's project.
 
     # Set the bundle project if unset; otherwise fail if the current file is
@@ -1137,7 +1208,26 @@ function migrate_dst ()
       info "'$f' is not in project $proj"
       return
     fi
+
+    # Skip ownership manifests and remove them from `bundle_files` so that we
+    # need not worry about file type for the rest of this function.
+    #
+    # Note that, in commit-splitting mode, skipped ownership manifests will
+    # not be printed in the file list after the migration despite not having
+    # been actioned.
+    #
+    if [ "$ftype" == "ownership" ]; then
+      info "skipping '$f'"
+      unset bundle_files["$i"]
+    fi
   done
+
+  # Fail if there were no package archives in `bundle_files`.
+  #
+  if [ "${#bundle_files[@]}" -eq 0 ]; then
+    info "no package archives selected"
+    return
+  fi
 
   # Migrate the bundle's files.
   #
@@ -1146,9 +1236,11 @@ function migrate_dst ()
   #
   trap cleanup EXIT
 
-  local cmsg=                   # The detailed part of the commit message.
+  # The commit message.
+  #
+  local cmsg="Migrate $proj from $src_sect to $dst_sect"$'\n\n'
 
-  for f in "${bundle_files[@]}"; do
+  for f in "${bundle_files[@]}"; do # Note: contains no ownership manifests.
     # Get the current package's name and version from its embedded manifest
     # (we already have the source project in $proj).
     #
@@ -1165,7 +1257,7 @@ function migrate_dst ()
 
     # Find and remove other revisions of the current package.
     #
-    local rv                    # Removed version numbers.
+    local rv # Removed version numbers.
     rv=($(remove_pkg_archives "$name" "$version*" \
                               "$dst_sect" \
                               "$version" "$proj"))
@@ -1199,14 +1291,352 @@ function migrate_dst ()
   # Commit the staged changes.
   #
   info
-  run git -C "$dst_dir" commit \
-          -m "Migrate $proj from $src_sect to $dst_sect"$'\n\n'"$cmsg"
+  run git -C "$dst_dir" commit -m "$cmsg"
   info
 
   # All files have been migrated successfully so set the result and clear the
   # EXIT trap.
   #
-  migrate_result=true
+  operation_result=true
+  trap EXIT
+
+  read -p "press Enter to continue"
+}
+
+# Check that ownership consistency would be maintained if the bundle's files
+# were dropped.
+#
+# Print "true" to stdout if all checks passed, and nothing in case of failure.
+#
+# Fail if a drop would leave, in the real source or destination repositories,
+# package archives without package or project ownership, or package ownership
+# manifests without project ownership.
+#
+# Note that in order to search for unselected packages and ownership
+# manifests, each repository's submit config is loaded again because the data
+# loaded during global init does not reflect the true state of the
+# repositories on disk if in destination-management mode.
+#
+function check_drop_ownership_consistency () # <proj>
+{
+  local proj="$1"  # Project name.
+
+  # Print "true" to stdout if <repo-dir> is the managed repository's
+  # directory, and nothing otherwise.
+  #
+  function managed_repo () # <repo-dir>
+  {
+    local d="$1"  # Repository directory.
+
+    if [[ (("$mode" == "source") && ("$d" == "$src_dir")) ||
+          (("$mode" != "source") && ("$d" == "$dst_dir")) ]]; then
+      echo -n "true"
+    fi
+  }
+
+  # Find the package names of all unselected package archives from <proj> in
+  # the real source and destination repositories.
+  #
+  local -A unsel_pkg_names=() # The names of unselected packages.
+
+  # Find unselected packages from <proj> in the repository directory specified
+  # by <repo-dir> and insert them into `unsel_pkg_names`.
+  #
+  # In deciding whether a file is unselected, only check `bundle_files` if
+  # <repo-dir> is the managed repository because if a file (erroneously)
+  # exists in both repositories and is selected in the managed repository it
+  # would be in `bundle_files` despite being unselected in the unmanaged one.
+  #
+  function find_unsel_pkg ()  # <repo-dir>
+  {
+    local rd="$1"  # Repository directory.
+
+    local owners
+    local -A sections
+    source "$rd/submit.config.bash"
+
+    local s
+    for s in "${sections[@]}"; do
+      local pd="$rd/$s/$proj"  # Project directory.
+      if [ -d "$pd" ]; then
+        local f
+        while read f; do
+          local frel="${f#$rd/}"  # Path made relative to repo dir.
+          if [[ ! "$(managed_repo "$rd")" ||
+                ! "$(contains "$frel" "${bundle_files[@]}")" ]]; then
+            local p
+            p=($(bpkg_util_pkg_verify_archive "$f"))  # (name ver proj)
+            unsel_pkg_names["${p[0]}"]=
+          fi
+        done < <(find "$pd" -type f -not -name "*.manifest")
+      fi
+    done
+  }
+
+  find_unsel_pkg "$real_src_dir"
+  find_unsel_pkg "$dst_dir"
+
+  # Find unselected package ownership from <proj> in the real source and
+  # destination repositories.
+  #
+  local unsel_pkg_owns= # True if there are unselected pkg ownership manifests.
+
+  # Find unselected package ownership manifest from <proj> in the repository
+  # directory specified by <repo-dir> and, if found, set `unsel_pkg_owns` to
+  # true. See find_unsel_pkg() above for a note about the role `bundle_files`
+  # plays.
+  #
+  function find_unsel_pkg_owns ()  # <repo-dir>
+  {
+    local rd="$1"  # Repository directory.
+
+    local owners
+    local -A sections
+    source "$rd/submit.config.bash"
+
+    local pd="$rd/$owners/$proj"  # Project directory.
+    if [ -d "$pd" ]; then
+      local f
+      while read f; do
+        f="${f#$rd/}"  # Make path relative to repo dir.
+
+        if [[ ("$f" == */package-owner.manifest) &&
+              (! "$(managed_repo "$rd")" ||
+               ! "$(contains "$f" "${bundle_files[@]}")") ]]; then
+          unsel_pkg_owns=true
+          break
+        fi
+      done < <(find "$pd" -type f)
+    fi
+  }
+
+  find_unsel_pkg_owns "$real_src_dir"
+  find_unsel_pkg_owns "$dst_dir"
+
+  # Fail if any ownership info about to be dropped would leave any ownerless
+  # package archives or package ownership manifests.
+  #
+  local f
+  for f in "${bundle_files[@]}"; do
+    case "$f" in
+      */project-owner.manifest)
+        if [[ ("${#unsel_pkg_names[@]}" -ne 0) || "$unsel_pkg_owns" ]]; then
+          info "cannot drop project ownership info without \
+associated packages and/or package ownership"
+          return
+        fi
+        ;;
+      */package-owner.manifest)
+        local pname="$(basename $(dirname "$f"))"
+        if [ -v unsel_pkg_names["$pname"] ]; then
+          info "cannot drop package ownership without associated packages"
+          return
+        fi
+        ;;
+    esac
+  done
+
+  echo -n "true"
+}
+
+# Drop the files in the selected commit bundle from the source repository.
+#
+# Takes as input the bundle files in the global `bundle_files` array which is
+# assumed to be non-empty and to contain only managed files (package archives
+# or ownership manifests) belonging to commits in the commit bundle.
+#
+# The mechanism by which success or failure is indicated is the same as for
+# migrate_src(). (In particular, the source repository will be left clean if
+# the removal of any of the files fails.)
+#
+# The operation will fail if any of the following is true:
+#
+# - Files in the commit bundle are not all from the same project (the "bundle
+#   project") and section (the "bundle section").
+#
+# - Ownership info would be removed for any files remaining after the drop
+#   (see check_drop_ownership_consistency()).
+#
+# - The mode is the stable-management, because stable, published packages
+#   cannot be unpublished.
+#
+# The operation proceeds as follows:
+#
+# - Check that all files are from the same project and check the resulting
+#   ownership consistency.
+#
+# - Get from the user the reason for dropping the files.
+#
+# - Remove each file from the source repository. Get user confirmation before
+#   dropping ownership manifests, issuing a notification message for each one
+#   skipped. Stage (but don't commit) each removal as the operation proceeds.
+#
+# - Make a commit to the source repository with an appropriate commit message.
+#
+#   If dropping at least one package archive:
+#
+#     "Drop <project> from <section> (<reason>)"
+#
+#     "  remove <package>/<version>"
+#     "  remove owners/<project>/project-owner.manifest"
+#     "  remove owners/<project>/<package>/package-owner.manifest"
+#
+#   If dropping only ownership information:
+#
+#     "Drop <project> ownership (<reason>)"
+#
+#     "  remove owners/<project>/project-owner.manifest"
+#     "  remove owners/<project>/<package>/package-owner.manifest"
+#
+function drop ()
+{
+  operation_result=
+
+  if [ "$mode" == "stable" ]; then
+    info "dropping files from $mode not supported"
+    return
+  fi
+
+  # Check that all files in the bundle are in the bundle project and that all
+  # package archives are in the bundle section before dropping any of
+  # them. Classify each file as a package archive or ownership manifest as we
+  # go along, based on its path.
+  #
+  # The bundle section is derived from the first package archive encountered
+  # and the bundle project from the first package archive or ownership
+  # manifest encountered.
+  #
+  local proj=                   # The bundle project.
+  local sect=                   # The bundle section name.
+  local pkgs=()                 # The bundle's package archives.
+  local owns=()                 # The bundle's ownership manifests.
+
+  local f
+  for f in "${bundle_files[@]}"; do
+    local fi=($(src_path_info "$f"))
+    local ftype="${fi[0]}" # Current file's type.
+    local fproj="${fi[1]}" # Current file's project.
+
+    if [ "$ftype" == "ownership" ]; then
+      owns+=("$f")
+
+    elif [ "$ftype" == "archive" ]; then
+      pkgs+=("$f")
+
+      local fsect_dir="${fi[2]}"               # Section dir from file path.
+      local fsect                              # File's section name.
+      fsect="$(src_section_name "$fsect_dir")" # Exits script on failure.
+
+      # Set the bundle section name if unset; otherwise fail if the current
+      # package archive is not from the bundle section.
+      #
+      if [ -z "$sect" ]; then
+        sect="$fsect"
+      elif [ "$fsect" != "$sect" ]; then
+        info "'$f' is not in section $sect"
+        return
+      fi
+    fi
+
+    # Set the bundle project if unset; otherwise fail if the current file is
+    # not from the bundle project.
+    #
+    if [ -z "$proj" ]; then
+      proj="$fproj"
+    elif [ "$fproj" != "$proj" ]; then
+      info "'$f' is not in project $proj"
+      return
+    fi
+  done
+
+  # Fail if the drop would remove ownership info from any remaining files.
+  # Note that this function prints diagnostics in case of failure.
+  #
+  if [ ! "$(check_drop_ownership_consistency "$proj")" ]; then
+    return
+  fi
+
+  # Get the reason for dropping the files from the user.
+  #
+  local reason=
+  info
+  while [ -z "$reason" ]; do
+    read -p "reason for dropping: " reason
+  done
+
+  # Set the commit message subject depending on whether there is at least one
+  # package archive in the bundle.
+  #
+  local cmsg= # Commit message.
+  if [ "${#pkgs[@]}" -ne 0 ]; then # Bundle contains package archive(s).
+    cmsg="Drop $proj from $sect ($reason)"$'\n\n'
+  else                             # Bundle contains only ownership manifests.
+    cmsg="Drop $proj ownership ($reason)"$'\n\n'
+  fi
+
+  # Remove the bundle's files from the source repository and compose the
+  # commit message details in the process. Get user confirmation to drop each
+  # ownership manifest, skipping those declined.
+  #
+  # Note that, in commit-splitting mode, skipped ownership manifests will not
+  # be printed in the file list after the migration despite not having been
+  # actioned.
+  #
+  # Ensure that the source repository is clean if any of the removals fail.
+  #
+  trap cleanup EXIT
+
+  local f
+  for f in "${pkgs[@]}"; do
+    # Get the current package's name and version from its embedded manifest.
+    #
+    local p
+    p=($(extract_pkg_info "$src_dir/$f"))
+    local name="${p[0]}"
+    local version="${p[1]}"
+
+    cmsg+="  remove $name/$version"$'\n'
+    run git -C "$src_dir" rm "$f" # Automatically removes empty directories.
+  done
+
+  local i
+  for i in "${!owns[@]}"; do
+    local f="${owns[$i]}"
+
+    # Ask whether or not this ownership manifest should be dropped. Then drop
+    # it if the user confirmed or skip it if the user declined.
+    #
+    local opt=
+    while [[ ("$opt" != y) && ("$opt" != n) ]]; do
+      read -p "drop '$f'? [y/n]: " opt
+    done
+
+    if [ "$opt" == y ]; then
+      cmsg+="  remove $f"$'\n'
+      run git -C "$src_dir" rm "$f" # Automatically removes empty directories.
+    else
+      info "skipping '$f'"
+
+      # Remove from `owns` so that we'll be able to detect cases where the
+      # bundle contained only ownership manifests and the user declined to
+      # drop all of them (in which case there would be nothing to commit).
+      #
+      unset owns["$i"]
+    fi
+  done
+
+  # Commit the changes made to the source repository (if any).
+  #
+  if [[ ("${#pkgs[@]}" -ne 0) || ("${#owns[@]}" -ne 0) ]]; then
+    info
+    run git -C "$src_dir" commit -m "$cmsg"
+  fi
+  info
+
+  # All files have been dropped successfully so set the result and clear the
+  # EXIT trap.
+  #
+  operation_result=true
   trap EXIT
 
   read -p "press Enter to continue"
@@ -1266,12 +1696,13 @@ function push ()
 #
 # Then prompt the user for the action (showing the current bundle):
 #
-# [1 2][<N>,m,c,p,q,l,?]:
+# [1 2][<N>,m,d,s,c,p,q,l,?]:
 #
 # <N> - add commit to the commit bundle
 #  m  - migrate the selected commit bundle
-#  c  - clear the selected commit bundle
+#  d  - drop the selected commit bundle
 #  s  - split commit(s) (operate on selected files)
+#  c  - clear the selected commit bundle
 #  p  - push source and destination repositories
 #  l  - list pending commits
 #  q  - quit (prompting to push if commits were made)
@@ -1387,10 +1818,9 @@ function split_commits ()
       bundle_files=("${r[@]}")
     }
 
-    # Put the unactioned bundle files into `bundle_files` after an
-    # operation. If the operation succeeded the unactioned files are the
-    # unselected ones and if it failed it's the union of the selected and
-    # unselected files.
+    # Put the unactioned bundle files into `bundle_files` after an operation.
+    # If the operation succeeded the unactioned files are the unselected ones
+    # and if it failed it's the union of the selected and unselected files.
     #
     function update_bundle_files ()  # <operation-result>
     {
@@ -1419,7 +1849,7 @@ function split_commits ()
       #
       fsel=($(sed 's/ /\n/g' <<<"${fsel[*]}" | sort -))
       local opt
-      read -p $'\n'"[${fsel[*]}][<N>,m,c,l,q,?]: " opt
+      read -p $'\n'"[${fsel[*]}][<N>,m,d,c,l,q,?]: " opt
 
       # Perform the selected action.
       #
@@ -1449,9 +1879,9 @@ function split_commits ()
               migrate_dst
             fi
 
-            update_bundle_files "$migrate_result"
+            update_bundle_files "$operation_result"
 
-            if [ "$migrate_result" ]; then
+            if [ "$operation_result" ]; then
               fsel=()
               need_push=true
               break
@@ -1461,17 +1891,23 @@ function split_commits ()
           fi
           ;;
         # Drop selected files.
-        # d)
-        # if [ "${#fsel[@]}" -ne 0 ]; then
-        #   collect_selected_files
-        #   drop
-        #   update_bundle_files "$migrate_result"
-        #   ...
-        # else
-        #   info "no files selected"
-        # fi
-        # ;;
+        #
+        d)
+          if [ "${#fsel[@]}" -ne 0 ]; then
+            collect_selected_files
+            drop
 
+            update_bundle_files "$operation_result"
+
+            if [ "$operation_result" ]; then
+              fsel=()
+              need_push=true
+              break
+            fi
+          else
+            info "no files selected"
+          fi
+          ;;
         # Clear the file selection (and print the file list again).
         #
         c)
@@ -1493,6 +1929,7 @@ function split_commits ()
 
  <N> - add file to selection
   m  - migrate the selected files
+  d  - drop the selected files
   c  - clear the file selection
   l  - list files
   q  - quit (back to main menu)
@@ -1558,7 +1995,7 @@ while true; do
     #   the commit.
     #
     # - Files associated with a different commit hash in 'file_commits' were
-    #   deleted and added back by subsequent commits.  These files are marked
+    #   deleted and added back by subsequent commits. These files are marked
     #   with '!' and will not prevent the migration of the commit.
     #
     # - Files with no association in 'file_commits' were deleted by a
@@ -1630,7 +2067,7 @@ while true; do
     bundle=($(sed 's/ /\n/g' <<<"${bundle[*]}" | sort -))
 
     printf "\n"
-    read -p "[${bundle[*]}][<N>,m,c,s,p,l,q,?]: " opt
+    read -p "[${bundle[*]}][<N>,m,d,s,c,p,l,q,?]: " opt
 
     case "$opt" in
       # Add commit to bundle.
@@ -1660,7 +2097,25 @@ added to selected bundle"
             else
               migrate_dst
             fi
-            if [ "$migrate_result" ]; then
+            if [ "$operation_result" ]; then
+              need_push=true
+              init=true
+              break
+            fi
+          fi
+        else
+          info "no commits selected"
+        fi
+        ;;
+      # Drop the commit bundle.
+      #
+      d)
+        if [ "${#bundle[@]}" -ne 0 ]; then
+          collect_bundle_files # Prints error if `bundle_files` left empty.
+
+          if [ "${#bundle_files[@]}" -ne 0 ]; then
+            drop
+            if [ "$operation_result" ]; then
               need_push=true
               init=true
               break
@@ -1743,8 +2198,9 @@ added to selected bundle"
 
  <N> - add commit to the commit bundle
   m  - migrate the selected commit bundle
-  c  - clear the selected commit bundle
+  d  - drop the selected commit bundle
   s  - split commit(s) (operate on selected files)
+  c  - clear the selected commit bundle
   p  - push source and destination repositories
   l  - list pending commits
   q  - quit (prompting to push if commits were made)
