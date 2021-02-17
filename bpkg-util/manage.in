@@ -119,7 +119,29 @@ dst_repo_name=public
 
 owd="$(pwd)"
 trap "{ cd '$owd'; exit 1; }" ERR
-set -o errtrace # Trap in functions and subshells.
+set -o errtrace     # Trap in functions and subshells.
+set -o pipefail     # Fail if any pipeline command fails.
+shopt -s lastpipe   # Execute last pipeline command in the current shell.
+
+# @@ With nullglob enabled I had to make many instances of the following
+#    replacements:
+#
+#      unset a[$i]
+#        =>
+#      unset "a[$i]"
+#
+#      [ -v a[$i] ]
+#        =>
+#      [ -v "a[$i]" ]
+#
+#    Required because the [] make these things look like globs/patterns which
+#    bash then replaces with "" if nullglob is turned on. This is not an issue
+#    with [[, however. So `[[ -v a[$i] ]]` works without quotes (while at
+#    the moment we still quote it for the consistency with [...]).
+#
+#    In this light, should we consider always using [[ instead of [?
+#
+shopt -s nullglob   # Expand no-match globs to nothing rather than themselves.
 
 @import bpkg-util/utility@
 
@@ -301,7 +323,7 @@ done
 # without a counterpart (for example, dropping from the alpha or beta sections
 # in destination-management mode).
 #
-if [[ ("$mode" != "source") && ! -v src_sections["$mode"] ]]; then
+if [[ ("$mode" != "source") && ! -v "src_sections[$mode]" ]]; then
   error "section '$mode' not configured in the destination repository"
 fi
 
@@ -483,13 +505,13 @@ function commit_files () # <commit-hash>
 # <path> must be relative to the source repository directory (`src_dir`).
 #
 # If the path refers to a managed archive file in the source repository, then
-# print `archive <project> <section-dir>`. The section directory will be
+# print `archive\n<project>\n<section-dir>\n`. The section directory will be
 # relative to the source repository directory.
 #
 # Otherwise, if the path refers to a managed ownership manifest file in the
-# source repository, then print `ownership <project>`.
+# source repository, then print `ownership\n<project>\n`.
 #
-# Otherwise the file is unmanaged; print `unmanaged`.
+# Otherwise the file is unmanaged; print `unmanaged\n`.
 #
 # Note that the function doesn't validate the file path exhaustively and may
 # classify improperly named file (invalid base name, etc) as an archive or
@@ -507,7 +529,9 @@ function src_path_info () # <path>
   local s
   for s in "${src_sections[@]}"; do
     if [[ "$f" =~ ^"$s"/([^/]+)/[^/]+$ ]]; then
-      echo -n "archive ${BASH_REMATCH[1]} $s"
+      echo "archive"
+      echo "${BASH_REMATCH[1]}"
+      echo "$s"
       return
     fi
   done
@@ -518,16 +542,17 @@ function src_path_info () # <path>
   # (the project directory, again).
   #
   if [[ -n "$src_owners" && ("$f" =~ ^"$src_owners"/([^/]+)/.+$) ]]; then
-    echo -n "ownership ${BASH_REMATCH[1]}"
+    echo "ownership"
+    echo "${BASH_REMATCH[1]}"
   else
-    echo -n "unmanaged"
+    echo "unmanaged"
   fi
 }
 
 # Extract the package name, version, and project from a package archive's
-# manifest and print it to stdout in the '<name> <version> <project>' form. If
-# the manifest does not specify the project name, the package name is returned
-# as the project name.
+# manifest and print it to stdout in the `<name>\n<version>\n<project>\n`
+# form. If the manifest does not specify the project name, the package name is
+# returned as the project name.
 #
 function extract_pkg_info () # <archive>
 {
@@ -535,7 +560,7 @@ function extract_pkg_info () # <archive>
 
   local r
   r=($(bpkg_util_pkg_verify_archive "$arc")) # <name> <version> <project>
-  if [ ! -v r[2] ]; then
+  if [ ! -v "r[2]" ]; then
     r[2]="${r[0]}"
   fi
 
@@ -546,7 +571,10 @@ function extract_pkg_info () # <archive>
     error "'$arc' archive directory name does not match package project '$p'"
   fi
 
-  echo -n "${r[@]}"
+  local e
+  for e in "${r[@]}"; do
+    echo "$e"
+  done
 }
 
 # Exit with an error if a package which is a duplicate of or is in conflict
@@ -607,10 +635,10 @@ function check_pkg_duplicate () # <pkg-name> <pkg-version>
 # and remove or skip each candidate at the user's direction. Stage (but don't
 # commit) the removals in the destination repository.
 #
-# The versions of the removed packages are written to stdout, separated by
-# spaces. For example:
+# The versions of the removed packages are written to stdout, each on a
+# separate line. For example:
 #
-#   1.2.3 1.3.0+1 1.3.0+2
+#   1.2.3\n1.3.0+1\n1.3.0+2\n
 #
 # Note that, currently, versions/revisions which are both lower and higher
 # than <pkg-version> will be considered for replacement.
@@ -623,8 +651,6 @@ function remove_pkg_archives ()
   local dsect="$3"
   local sver="$4"
   local sproj="$5"
-
-  local rv=()                   # Removed version numbers.
 
   # Search for replacement candidates.
   #
@@ -644,7 +670,7 @@ function remove_pkg_archives ()
     # Get the destination archive's info from its embedded manifest.
     #
     local p
-    p=($(extract_pkg_info "$f"))
+    extract_pkg_info "$f" | readarray -t p
 
     local dver="${p[1]}"          # Destination package version.
     local dproj="${p[2]}"         # Destination package project.
@@ -668,7 +694,7 @@ function remove_pkg_archives ()
       case "$opt" in
         y)
           run git -C "$dst_dir" rm --quiet "${f#$dst_dir/}"
-          rv+=("$dver")
+          echo "$dver"
           break
           ;;
         n)
@@ -677,8 +703,6 @@ function remove_pkg_archives ()
       esac
     done
   done
-
-  echo -n "${rv[@]}"
 }
 
 # The commit bundle array is the set of selected pending commits. Its elements
@@ -723,7 +747,8 @@ function collect_bundle_files ()
       # Fail (by clearing the `bundle_files` array) if the current file is
       # unmanaged.
       #
-      local fi=($(src_path_info "$f"))
+      local fi
+      src_path_info "$f" | readarray -t fi
       if [ "${fi[0]}" == "unmanaged" ]; then
         info "cannot include commit $i: '$f' is unmanaged"
         bundle_files=()
@@ -905,7 +930,8 @@ function migrate_src ()
 
   local f
   for f in "${bundle_files[@]}"; do
-    local fi=($(src_path_info "$f"))
+    local fi
+    src_path_info "$f" | readarray -t fi
     local ftype="${fi[0]}" # Current file's type.
     local fproj="${fi[1]}" # Current file's project.
 
@@ -957,13 +983,13 @@ function migrate_src ()
 
     # If it exists, 'testing' overrides 'stable' at the destination.
     #
-    if [[ ("$dst_sect" == "stable") && -v dst_sections["testing"] ]]; then
+    if [[ ("$dst_sect" == "stable") && -v "dst_sections[testing]" ]]; then
       dst_sect="testing"
     fi
 
     # Fail if the target section does not exist in the destination repository.
     #
-    if [ ! -v dst_sections["$dst_sect"] ]; then
+    if [ ! -v "dst_sections[$dst_sect]" ]; then
       info "section '$dst_sect' does not exist in the destination repository"
       return
     fi
@@ -1026,7 +1052,7 @@ function migrate_src ()
     # (we already have the source project in $proj).
     #
     local p
-    p=($(extract_pkg_info "$src_dir/$f"))
+    extract_pkg_info "$src_dir/$f" | readarray -t p
 
     local name="${p[0]}"
     local version="${p[1]}"
@@ -1044,9 +1070,9 @@ function migrate_src ()
     esac
 
     local rv                    # Removed version numbers.
-    rv=($(remove_pkg_archives "$name" "$vpat" \
-                              "$dst_sect" \
-                              "$version" "$proj"))
+    remove_pkg_archives "$name" "$vpat" \
+                        "$dst_sect" \
+                        "$version" "$proj" | readarray -t rv
 
     # Update the commit messages and migrate the current package.
     #
@@ -1054,8 +1080,9 @@ function migrate_src ()
     if [ "${#rv[@]}" -eq 0 ]; then
       dst_cmsg+="  add $name/$version"$'\n'
     else
-      for ((i=0; i != "${#rv[@]}"; ++i)); do
-        dst_cmsg+="  replace $name/${rv[$i]} with $version"$'\n'
+      local v
+      for v in "${rv[@]}"; do
+        dst_cmsg+="  replace $name/$v with $version"$'\n'
       done
     fi
 
@@ -1179,7 +1206,7 @@ function migrate_dst ()
   # Fail if the source section has no counterpart, in which case migration
   # from it is not supported.
   #
-  if [ ! -v sect_cparts["$src_sect"] ]; then
+  if [ ! -v "sect_cparts[$src_sect]" ]; then
     info "migration from $src_sect not supported"
     return
   fi
@@ -1195,7 +1222,8 @@ function migrate_dst ()
   local i
   for i in "${!bundle_files[@]}"; do
     local f="${bundle_files[$i]}"
-    local fi=($(src_path_info "$f"))
+    local fi
+    src_path_info "$f" | readarray -t fi
     local ftype="${fi[0]}"  # Current file's type.
     local fproj="${fi[1]}"  # Current file's project.
 
@@ -1218,7 +1246,7 @@ function migrate_dst ()
     #
     if [ "$ftype" == "ownership" ]; then
       info "skipping '$f'"
-      unset bundle_files["$i"]
+      unset "bundle_files[$i]"
     fi
   done
 
@@ -1245,7 +1273,7 @@ function migrate_dst ()
     # (we already have the source project in $proj).
     #
     local p
-    p=($(extract_pkg_info "$src_dir/$f"))
+    extract_pkg_info "$src_dir/$f" | readarray -t p
 
     local name="${p[0]}"
     local version="${p[1]}"
@@ -1258,17 +1286,18 @@ function migrate_dst ()
     # Find and remove other revisions of the current package.
     #
     local rv # Removed version numbers.
-    rv=($(remove_pkg_archives "$name" "$version*" \
-                              "$dst_sect" \
-                              "$version" "$proj"))
+    remove_pkg_archives "$name" "$version*" \
+                        "$dst_sect" \
+                        "$version" "$proj" | readarray -t rv
 
     # Update the commit message.
     #
     if [ "${#rv[@]}" -eq 0 ]; then
       cmsg+="  move $name/$version"$'\n'
     else
-      for ((i=0; i != "${#rv[@]}"; ++i)); do
-        cmsg+="  replace $name/${rv[$i]} with $version"$'\n'
+      local v
+      for v in "${rv[@]}"; do
+        cmsg+="  replace $name/$v with $version"$'\n'
       done
     fi
 
@@ -1428,7 +1457,7 @@ associated packages and/or package ownership"
         ;;
       */package-owner.manifest)
         local pname="$(basename $(dirname "$f"))"
-        if [ -v unsel_pkg_names["$pname"] ]; then
+        if [ -v "unsel_pkg_names[$pname]" ]; then
           info "cannot drop package ownership without associated packages"
           return
         fi
@@ -1513,7 +1542,8 @@ function drop ()
 
   local f
   for f in "${bundle_files[@]}"; do
-    local fi=($(src_path_info "$f"))
+    local fi
+    src_path_info "$f" | readarray -t fi
     local ftype="${fi[0]}" # Current file's type.
     local fproj="${fi[1]}" # Current file's project.
 
@@ -1591,7 +1621,7 @@ function drop ()
     # Get the current package's name and version from its embedded manifest.
     #
     local p
-    p=($(extract_pkg_info "$src_dir/$f"))
+    extract_pkg_info "$src_dir/$f" | readarray -t p
     local name="${p[0]}"
     local version="${p[1]}"
 
@@ -1621,7 +1651,7 @@ function drop ()
       # bundle contained only ownership manifests and the user declined to
       # drop all of them (in which case there would be nothing to commit).
       #
-      unset owns["$i"]
+      unset "owns[$i]"
     fi
   done
 
@@ -1780,7 +1810,8 @@ function split_commits ()
         # Get this file's size if it's a package archive.
         #
         local sz=  # File size.
-        local fi=($(src_path_info "$f"))
+        local fi
+        src_path_info "$f" | readarray -t fi
         if [ "${fi[0]}" == "archive" ]; then
           sz="  $(file_size "$f")"
         fi
@@ -1831,7 +1862,7 @@ function split_commits ()
         #
         local i
         for i in "${fsel[@]}"; do
-          unset unactioned_files[$i-1]
+          unset "unactioned_files[$i-1]"
         done
       fi
 
@@ -1857,7 +1888,7 @@ function split_commits ()
         # Add file <N> to the selection.
         #
         [0-9]*)
-          if [[ ("$opt" =~ ^[1-9][0-9]*$) && -v bundle_files[$opt-1] ]]; then
+          if [[ ("$opt" =~ ^[1-9][0-9]*$) && -v "bundle_files[$opt-1]" ]]; then
             if [ ! "$(contains "$opt" "${fsel[@]}")" ]; then
               fsel+=("$opt")
               info "file $opt added to selection"
@@ -2003,7 +2034,7 @@ while true; do
     #   '*' and will not prevent the migration of the commit.
     #
     while read -d '' f; do
-      fi=($(src_path_info "$f"))
+      src_path_info "$f" | readarray -t fi
       ftype="${fi[0]}"
 
       if [ "$ftype" == "unmanaged" ]; then
@@ -2017,7 +2048,7 @@ while true; do
         # `file_commits`), get its size.
         #
         sz=  # File size.
-        if [[ ("$ftype" == "archive") && -v file_commits["$f"] ]]; then
+        if [[ ("$ftype" == "archive") && -v "file_commits[$f]" ]]; then
           sz="$(file_size "$f")"
         fi
 
@@ -2026,7 +2057,7 @@ while true; do
         #
         if [ "${file_commits[$f]}" == "$h" ]; then
           info "  $f  $sz"  # Last added or moved by the current commit.
-        elif [ -v file_commits["$f"] ]; then
+        elif [ -v "file_commits[$f]" ]; then
           info "! $f  $sz"  # Deleted and added back by subsequent commits.
         elif [[ ("$mode" == "source") || ("$ftype" != "ownership") ]]; then
           # File was deleted and never added again and, if we're in
@@ -2073,7 +2104,7 @@ while true; do
       # Add commit to bundle.
       #
       [0-9]*)
-        if [[ ("$opt" =~ ^[1-9][0-9]*$) && -v pending_seq[$opt-1] ]]; then
+        if [[ ("$opt" =~ ^[1-9][0-9]*$) && -v "pending_seq[$opt-1]" ]]; then
           if [ ! "$(contains "$opt" "${bundle[@]}")" ]; then
             bundle+=("$opt")
             info "commit $opt (${pending_seq[$opt-1]}) \
