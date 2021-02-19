@@ -1535,21 +1535,44 @@ function drop ()
   # and the bundle project from the first package archive or ownership
   # manifest encountered.
   #
+  # Get user confirmation to drop each ownership manifest, skipping those
+  # declined.
+  #
+  # Note that, in commit-splitting mode, skipped ownership manifests will not
+  # be printed in the file list after the migration despite not having been
+  # actioned.
+  #
   local proj=                   # The bundle project.
   local sect=                   # The bundle section name.
-  local pkgs=()                 # The bundle's package archives.
-  local owns=()                 # The bundle's ownership manifests.
+  local pkgs=()                 # Package archives to be dropped.
+  local owns=()                 # Ownership manifests to be dropped.
 
-  local f
-  for f in "${bundle_files[@]}"; do
+  local i
+  for i in "${!bundle_files[@]}"; do
+    local f="${bundle_files[$i]}"
     local fi
     src_path_info "$f" | readarray -t fi
     local ftype="${fi[0]}" # Current file's type.
     local fproj="${fi[1]}" # Current file's project.
 
     if [ "$ftype" == "ownership" ]; then
-      owns+=("$f")
+      # Ask whether or not this ownership manifest should be dropped. Add it
+      # to `owns` if the user confirmed or, if the user declined, skip it by
+      # not adding it to `owns` and by removing it from `bundle_files` (to
+      # prevent check_drop_ownership_consistency() from thinking it's still
+      # selected).
+      #
+      local opt=
+      while [[ ("$opt" != y) && ("$opt" != n) ]]; do
+        read -p "drop '$f'? [y/n]: " opt
+      done
 
+      if [ "$opt" == y ]; then
+        owns+=("$f")
+      else
+        info "skipping '$f'"
+        unset "bundle_files[$i]"
+      fi
     elif [ "$ftype" == "archive" ]; then
       pkgs+=("$f")
 
@@ -1579,10 +1602,17 @@ function drop ()
     fi
   done
 
-  # Fail if the drop would remove ownership info from any remaining files.
-  # Note that this function prints diagnostics in case of failure.
+  # Fail if there is nothing to drop or if the drop would remove ownership
+  # info from any remaining files.
   #
-  if [ ! "$(check_drop_ownership_consistency "$proj")" ]; then
+  # There would be nothing to drop if the bundle consisted only of ownership
+  # manifests and the user declined to drop all of them.
+  #
+  # Note that check_drop_ownership_consistency() prints diagnostics in case of
+  # failure.
+  #
+  if [[ (("${#pkgs[@]}" -eq 0) && ("${#owns[@]}" -eq 0)) ||
+        ! "$(check_drop_ownership_consistency "$proj")" ]]; then
     return
   fi
 
@@ -1605,12 +1635,7 @@ function drop ()
   fi
 
   # Remove the bundle's files from the source repository and compose the
-  # commit message details in the process. Get user confirmation to drop each
-  # ownership manifest, skipping those declined.
-  #
-  # Note that, in commit-splitting mode, skipped ownership manifests will not
-  # be printed in the file list after the migration despite not having been
-  # actioned.
+  # commit message details in the process.
   #
   # Ensure that the source repository is clean if any of the removals fail.
   #
@@ -1629,38 +1654,15 @@ function drop ()
     run git -C "$src_dir" rm "$f" # Automatically removes empty directories.
   done
 
-  local i
-  for i in "${!owns[@]}"; do
-    local f="${owns[$i]}"
-
-    # Ask whether or not this ownership manifest should be dropped. Then drop
-    # it if the user confirmed or skip it if the user declined.
-    #
-    local opt=
-    while [[ ("$opt" != y) && ("$opt" != n) ]]; do
-      read -p "drop '$f'? [y/n]: " opt
-    done
-
-    if [ "$opt" == y ]; then
-      cmsg+="  remove $f"$'\n'
-      run git -C "$src_dir" rm "$f" # Automatically removes empty directories.
-    else
-      info "skipping '$f'"
-
-      # Remove from `owns` so that we'll be able to detect cases where the
-      # bundle contained only ownership manifests and the user declined to
-      # drop all of them (in which case there would be nothing to commit).
-      #
-      unset "owns[$i]"
-    fi
+  for f in "${owns[@]}"; do
+    cmsg+="  remove $f"$'\n'
+    run git -C "$src_dir" rm "$f" # Automatically removes empty directories.
   done
 
-  # Commit the changes made to the source repository (if any).
+  # Commit the changes made to the source repository.
   #
-  if [[ ("${#pkgs[@]}" -ne 0) || ("${#owns[@]}" -ne 0) ]]; then
-    info
-    run git -C "$src_dir" commit -m "$cmsg"
-  fi
+  info
+  run git -C "$src_dir" commit -m "$cmsg"
   info
 
   # All files have been dropped successfully so set the result and clear the
