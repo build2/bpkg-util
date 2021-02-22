@@ -122,25 +122,6 @@ trap "{ cd '$owd'; exit 1; }" ERR
 set -o errtrace     # Trap in functions and subshells.
 set -o pipefail     # Fail if any pipeline command fails.
 shopt -s lastpipe   # Execute last pipeline command in the current shell.
-
-# @@ With nullglob enabled I had to make many instances of the following
-#    replacements:
-#
-#      unset a[$i]
-#        =>
-#      unset "a[$i]"
-#
-#      [ -v a[$i] ]
-#        =>
-#      [ -v "a[$i]" ]
-#
-#    Required because the [] make these things look like globs/patterns which
-#    bash then replaces with "" if nullglob is turned on. This is not an issue
-#    with [[, however. So `[[ -v a[$i] ]]` works without quotes (while at
-#    the moment we still quote it for the consistency with [...]).
-#
-#    In this light, should we consider always using [[ instead of [?
-#
 shopt -s nullglob   # Expand no-match globs to nothing rather than themselves.
 
 @import bpkg-util/utility@
@@ -150,7 +131,7 @@ shopt -s nullglob   # Expand no-match globs to nothing rather than themselves.
 #
 bpkg_util_bpkg="$(dirname "$(realpath "${BASH_SOURCE[0]}")")/bpkg"
 
-if [ ! -x "$bpkg_util_bpkg" ]; then
+if [[ ! -x "$bpkg_util_bpkg" ]]; then
   bpkg_util_bpkg=bpkg
 fi
 
@@ -167,7 +148,7 @@ mode="source"
 #
 filter="*"
 
-while [ "$#" -gt 0 ]; do
+while [[ "$#" -gt 0 ]]; do
   case "$1" in
     --testing=*)
       filter="${1#--testing=}"
@@ -212,9 +193,9 @@ done
 
 # Set the working directory.
 #
-if [ $# -eq 0 ]; then
+if [[ "$#" -eq 0 ]]; then
   dir="$owd"
-elif [ $# -eq 1 ]; then
+elif [[ "$#" -eq 1 ]]; then
   dir="${1%/}" # <dir> with trailing slash removed.
 else
   error "$usage"
@@ -226,7 +207,7 @@ fi
 # destination-management mode.
 #
 real_src_dir="$dir/$src_repo_name"  # The real source repository directory.
-if [ "$mode" != "source" ]; then
+if [[ "$mode" != "source" ]]; then
   src_repo_name="$dst_repo_name"
 fi
 
@@ -239,21 +220,21 @@ fi
 src_dir="$dir/$src_repo_name"
 dst_dir="$dir/$dst_repo_name"
 
-if [ ! -d "$src_dir" ]; then
+if [[ ! -d "$src_dir" ]]; then
   error "'$src_dir' does not exist or is not a directory"
 fi
 
-if [ ! -d "$dst_dir" ]; then
+if [[ ! -d "$dst_dir" ]]; then
   error "'$dst_dir' does not exist or is not a directory"
 fi
 
 # Check that both git repositories are clean.
 #
-if [ -n "$(git -C $src_dir status --porcelain)" ]; then
+if [[ -n "$(git -C $src_dir status --porcelain)" ]]; then
   error "git repository in '$src_dir' is not clean"
 fi
 
-if [ -n "$(git -C $dst_dir status --porcelain)" ]; then
+if [[ -n "$(git -C $dst_dir status --porcelain)" ]]; then
   error "git repository in '$dst_dir' is not clean"
 fi
 
@@ -367,7 +348,7 @@ function init_globals ()
   local s
   for s in "${src_sections[@]}"; do
     local d="$src_dir/$s"
-    if [ -d "$d" ]; then
+    if [[ -d "$d" ]]; then
       local f
       while read f; do
         src_files+=("${f#$src_dir/}")
@@ -444,7 +425,7 @@ function init_globals ()
 
     # If this is a pending commit, prepend its hash to the ordered array.
     #
-    if [ "${pending_set[$h]}" ]; then
+    if [[ "${pending_set[$h]}" ]]; then
       pending_seq=("$h" "${pending_seq[@]}")
       ((++i))
     fi
@@ -462,7 +443,7 @@ function cleanup ()
 {
   info "migration failed; resetting and cleaning repositories"
 
-  if ([ "$mode" == "source" ] && ! run git -C "$src_dir" reset --hard) ||
+  if ([[ "$mode" == "source" ]] && ! run git -C "$src_dir" reset --hard) ||
      ! run git -C "$dst_dir" reset --hard                              ||
      ! run git -C "$dst_dir" clean --force; then
     info "failed to reset/clean repositories -- manual intervention required"
@@ -560,14 +541,14 @@ function extract_pkg_info () # <archive>
 
   local r
   r=($(bpkg_util_pkg_verify_archive "$arc")) # <name> <version> <project>
-  if [ ! -v "r[2]" ]; then
+  if [[ ! -v r[2] ]]; then
     r[2]="${r[0]}"
   fi
 
   # Verify that the archive parent directory name matches the project.
   #
   local p="${r[2]}"
-  if [ "$p" != "$(basename "$(dirname "$arc")")" ]; then
+  if [[ "$p" != "$(basename "$(dirname "$arc")")" ]]; then
     error "'$arc' archive directory name does not match package project '$p'"
   fi
 
@@ -601,12 +582,12 @@ function check_pkg_duplicate () # <pkg-name> <pkg-version>
     IFS=$'\n' eval \
     'p=($(bpkg_util_pkg_find_archive "$name-$version.*" "$dst_dir/$sd"))'
 
-    if [ "${#p[@]}" -ne 0 ]; then
+    if [[ "${#p[@]}" -ne 0 ]]; then
       local a="${p[0]}"
       local n="${p[1]}"
       local v="${p[2]}"
 
-      if [ "$n" == "$name" ]; then
+      if [[ "$n" == "$name" ]]; then
         error "duplicate of $name/$version at '$a'"
       else
         error "conflict of $name/$version with $n/$v at '$a'"
@@ -682,7 +663,7 @@ function remove_pkg_archives ()
     #
     local src="$sver"
     local dst="$name/$dver"
-    if [ "$dproj" != "$sproj" ]; then
+    if [[ "$dproj" != "$sproj" ]]; then
       src+=" ($sproj)"
       dst+=" ($dproj)"
     fi
@@ -749,7 +730,7 @@ function collect_bundle_files ()
       #
       local fi
       src_path_info "$f" | readarray -t fi
-      if [ "${fi[0]}" == "unmanaged" ]; then
+      if [[ "${fi[0]}" == "unmanaged" ]]; then
         info "cannot include commit $i: '$f' is unmanaged"
         bundle_files=()
         return
@@ -757,7 +738,7 @@ function collect_bundle_files ()
 
       # Add this file only if it belongs to the current commit.
       #
-      if [ "${file_commits[$f]}" == "$h" ]; then
+      if [[ "${file_commits[$f]}" == "$h" ]]; then
         bundle_files+=("$f")
       fi
     done < <(commit_files "$h")
@@ -774,7 +755,7 @@ function contains () # <target> <word0> <word1> ...
 
   local w
   for w in "$@"; do
-    if [ "$w" == "$k" ]; then
+    if [[ "$w" == "$k" ]]; then
       echo -n "true"
       return
     fi
@@ -935,10 +916,10 @@ function migrate_src ()
     local ftype="${fi[0]}" # Current file's type.
     local fproj="${fi[1]}" # Current file's project.
 
-    if [ "$ftype" == "ownership" ]; then
+    if [[ "$ftype" == "ownership" ]]; then
       owns+=("$f")
 
-    elif [ "$ftype" == "archive" ]; then
+    elif [[ "$ftype" == "archive" ]]; then
       pkgs+=("$f")
 
       local fsect_dir="${fi[2]}"               # Section dir from file path.
@@ -948,9 +929,9 @@ function migrate_src ()
       # Set the source section name if unset; otherwise fail if the current
       # file is not from the source section.
       #
-      if [ -z "$src_sect" ]; then
+      if [[ -z "$src_sect" ]]; then
         src_sect="$fsect"
-      elif [ "$fsect" != "$src_sect" ]; then
+      elif [[ "$fsect" != "$src_sect" ]]; then
         info "'$f' is not in section $src_sect"
         return
       fi
@@ -959,9 +940,9 @@ function migrate_src ()
     # Set the bundle project if unset; otherwise fail if the current file is
     # not from the bundle project.
     #
-    if [ -z "$proj" ]; then
+    if [[ -z "$proj" ]]; then
       proj="$fproj"
-    elif [ "$fproj" != "$proj" ]; then
+    elif [[ "$fproj" != "$proj" ]]; then
       info "'$f' is not in project $proj"
       return
     fi
@@ -978,18 +959,18 @@ function migrate_src ()
   local src_cmsg     # Source commit message.
   local dst_cmsg     # Destination commit message.
 
-  if [ "${#pkgs[@]}" -ne 0 ]; then # Bundle contains package archive(s).
+  if [[ "${#pkgs[@]}" -ne 0 ]]; then # Bundle contains package archive(s).
     dst_sect="$src_sect"
 
     # If it exists, 'testing' overrides 'stable' at the destination.
     #
-    if [[ ("$dst_sect" == "stable") && -v "dst_sections[testing]" ]]; then
+    if [[ ("$dst_sect" == "stable") && -v dst_sections["testing"] ]]; then
       dst_sect="testing"
     fi
 
     # Fail if the target section does not exist in the destination repository.
     #
-    if [ ! -v "dst_sections[$dst_sect]" ]; then
+    if [[ ! -v "dst_sections[$dst_sect]" ]]; then
       info "section '$dst_sect' does not exist in the destination repository"
       return
     fi
@@ -1004,7 +985,7 @@ function migrate_src ()
     # destination but enabled on source is probably obscure, but let's
     # consider it possible since the submit-git handler allows such a setup.
     #
-    if [ -n "$dst_owners" ]; then
+    if [[ -n "$dst_owners" ]]; then
       src_cmsg="Migrate $proj ownership info to $dst_repo_name"$'\n\n'
       dst_cmsg="Migrate $proj ownership info from $src_repo_name"$'\n\n'
     else
@@ -1077,7 +1058,7 @@ function migrate_src ()
     # Update the commit messages and migrate the current package.
     #
     src_cmsg+="  remove $name/$version"$'\n'
-    if [ "${#rv[@]}" -eq 0 ]; then
+    if [[ "${#rv[@]}" -eq 0 ]]; then
       dst_cmsg+="  add $name/$version"$'\n'
     else
       local v
@@ -1101,11 +1082,11 @@ function migrate_src ()
   for f in "${owns[@]}"; do
     src_cmsg+="  remove $f"$'\n'
 
-    if [ -n "$dst_owners" ]; then
+    if [[ -n "$dst_owners" ]]; then
       local dp=$(dirname "${f/$src_owners/$dst_owners}")  # Destination path.
       local fn=$(basename "$f")                           # File name.
 
-      if [ -f "$dst_dir/$dp/$fn" ]; then
+      if [[ -f "$dst_dir/$dp/$fn" ]]; then
         error "$f already exists at $dst_dir/$dp/$fn"
       fi
 
@@ -1121,7 +1102,7 @@ function migrate_src ()
   info
   run git -C "$src_dir" commit -m "$src_cmsg"
 
-  if [ -n "$dst_cmsg" ]; then
+  if [[ -n "$dst_cmsg" ]]; then
     info
     run git -C "$dst_dir" commit -m "$dst_cmsg"
   fi
@@ -1206,7 +1187,7 @@ function migrate_dst ()
   # Fail if the source section has no counterpart, in which case migration
   # from it is not supported.
   #
-  if [ ! -v "sect_cparts[$src_sect]" ]; then
+  if [[ ! -v "sect_cparts[$src_sect]" ]]; then
     info "migration from $src_sect not supported"
     return
   fi
@@ -1230,9 +1211,9 @@ function migrate_dst ()
     # Set the bundle project if unset; otherwise fail if the current file is
     # not from the bundle project.
     #
-    if [ -z "$proj" ]; then
+    if [[ -z "$proj" ]]; then
       proj="$fproj"
-    elif [ "$fproj" != "$proj" ]; then
+    elif [[ "$fproj" != "$proj" ]]; then
       info "'$f' is not in project $proj"
       return
     fi
@@ -1244,7 +1225,7 @@ function migrate_dst ()
     # not be printed in the file list after the migration despite not having
     # been actioned.
     #
-    if [ "$ftype" == "ownership" ]; then
+    if [[ "$ftype" == "ownership" ]]; then
       info "skipping '$f'"
       unset "bundle_files[$i]"
     fi
@@ -1252,7 +1233,7 @@ function migrate_dst ()
 
   # Fail if there were no package archives in `bundle_files`.
   #
-  if [ "${#bundle_files[@]}" -eq 0 ]; then
+  if [[ "${#bundle_files[@]}" -eq 0 ]]; then
     info "no package archives selected"
     return
   fi
@@ -1292,7 +1273,7 @@ function migrate_dst ()
 
     # Update the commit message.
     #
-    if [ "${#rv[@]}" -eq 0 ]; then
+    if [[ "${#rv[@]}" -eq 0 ]]; then
       cmsg+="  move $name/$version"$'\n'
     else
       local v
@@ -1313,7 +1294,7 @@ function migrate_dst ()
   # file is removed, so this does not need to be done in migrate_src().)
   #
   local d="$dst_dir/$src_sect_dir/$proj/"
-  if [ -z "$(ls -A "$d")" ]; then
+  if [[ -z "$(ls -A "$d")" ]]; then
     rmdir "$d"
   fi
 
@@ -1387,7 +1368,7 @@ function check_drop_ownership_consistency () # <proj>
     local s
     for s in "${sections[@]}"; do
       local pd="$rd/$s/$proj"  # Project directory.
-      if [ -d "$pd" ]; then
+      if [[ -d "$pd" ]]; then
         local f
         while read f; do
           local frel="${f#$rd/}"  # Path made relative to repo dir.
@@ -1424,7 +1405,7 @@ function check_drop_ownership_consistency () # <proj>
     source "$rd/submit.config.bash"
 
     local pd="$rd/$owners/$proj"  # Project directory.
-    if [ -d "$pd" ]; then
+    if [[ -d "$pd" ]]; then
       local f
       while read f; do
         f="${f#$rd/}"  # Make path relative to repo dir.
@@ -1457,7 +1438,7 @@ associated packages and/or package ownership"
         ;;
       */package-owner.manifest)
         local pname="$(basename $(dirname "$f"))"
-        if [ -v "unsel_pkg_names[$pname]" ]; then
+        if [[ -v "unsel_pkg_names[$pname]" ]]; then
           info "cannot drop package ownership without associated packages"
           return
         fi
@@ -1521,7 +1502,7 @@ function drop ()
 {
   operation_result=
 
-  if [ "$mode" == "stable" ]; then
+  if [[ "$mode" == "stable" ]]; then
     info "dropping files from $mode not supported"
     return
   fi
@@ -1555,7 +1536,7 @@ function drop ()
     local ftype="${fi[0]}" # Current file's type.
     local fproj="${fi[1]}" # Current file's project.
 
-    if [ "$ftype" == "ownership" ]; then
+    if [[ "$ftype" == "ownership" ]]; then
       # Ask whether or not this ownership manifest should be dropped. Add it
       # to `owns` if the user confirmed or, if the user declined, skip it by
       # not adding it to `owns` and by removing it from `bundle_files` (to
@@ -1567,13 +1548,13 @@ function drop ()
         read -p "drop '$f'? [y/n]: " opt
       done
 
-      if [ "$opt" == y ]; then
+      if [[ "$opt" == y ]]; then
         owns+=("$f")
       else
         info "skipping '$f'"
         unset "bundle_files[$i]"
       fi
-    elif [ "$ftype" == "archive" ]; then
+    elif [[ "$ftype" == "archive" ]]; then
       pkgs+=("$f")
 
       local fsect_dir="${fi[2]}"               # Section dir from file path.
@@ -1583,9 +1564,9 @@ function drop ()
       # Set the bundle section name if unset; otherwise fail if the current
       # package archive is not from the bundle section.
       #
-      if [ -z "$sect" ]; then
+      if [[ -z "$sect" ]]; then
         sect="$fsect"
-      elif [ "$fsect" != "$sect" ]; then
+      elif [[ "$fsect" != "$sect" ]]; then
         info "'$f' is not in section $sect"
         return
       fi
@@ -1594,9 +1575,9 @@ function drop ()
     # Set the bundle project if unset; otherwise fail if the current file is
     # not from the bundle project.
     #
-    if [ -z "$proj" ]; then
+    if [[ -z "$proj" ]]; then
       proj="$fproj"
-    elif [ "$fproj" != "$proj" ]; then
+    elif [[ "$fproj" != "$proj" ]]; then
       info "'$f' is not in project $proj"
       return
     fi
@@ -1620,7 +1601,7 @@ function drop ()
   #
   local reason=
   info
-  while [ -z "$reason" ]; do
+  while [[ -z "$reason" ]]; do
     read -p "reason for dropping: " reason
   done
 
@@ -1628,7 +1609,7 @@ function drop ()
   # package archive in the bundle.
   #
   local cmsg= # Commit message.
-  if [ "${#pkgs[@]}" -ne 0 ]; then # Bundle contains package archive(s).
+  if [[ "${#pkgs[@]}" -ne 0 ]]; then # Bundle contains package archive(s).
     cmsg="Drop $proj from $sect ($reason)"$'\n\n'
   else                             # Bundle contains only ownership manifests.
     cmsg="Drop $proj ownership ($reason)"$'\n\n'
@@ -1696,7 +1677,7 @@ function push ()
     error "push to $dst_repo_name failed"
   fi
 
-  if [ "$mode" == "source" ] && ! run git -C "$src_dir" push; then
+  if [[ "$mode" == "source" ]] && ! run git -C "$src_dir" push; then
     error "push to $src_repo_name failed"
   fi
 }
@@ -1793,7 +1774,7 @@ function split_commits ()
   local fsel=()
 
   while true; do
-    if [ "${#bundle_files[@]}" -ne 0 ]; then
+    if [[ "${#bundle_files[@]}" -ne 0 ]]; then
       # Print the commits followed by their files. Because `bundle_files` is
       # grouped by commit we know we are on a new commit when the current
       # file's commit hash differs from that of its predecessor.
@@ -1804,7 +1785,7 @@ function split_commits ()
         local f="${bundle_files[$i]}"  # Current file.
         local fh="${file_commits[$f]}" # Current file's commit hash.
 
-        if [ "$fh" != "$h" ]; then # New commit so first print its heading.
+        if [[ "$fh" != "$h" ]]; then # New commit so first print its heading.
           h="$fh"
           printf "\n%s %s\n\n" "$fh" "$(commit_subject "$fh")" >&2
         fi
@@ -1814,7 +1795,7 @@ function split_commits ()
         local sz=  # File size.
         local fi
         src_path_info "$f" | readarray -t fi
-        if [ "${fi[0]}" == "archive" ]; then
+        if [[ "${fi[0]}" == "archive" ]]; then
           sz="  $(file_size "$f")"
         fi
 
@@ -1859,7 +1840,7 @@ function split_commits ()
     {
       local opres="$1"
 
-      if [ "$opres" ]; then
+      if [[ "$opres" ]]; then
         # Remove the selected/actioned files from `unactioned_files`.
         #
         local i
@@ -1891,7 +1872,7 @@ function split_commits ()
         #
         [0-9]*)
           if [[ ("$opt" =~ ^[1-9][0-9]*$) && -v "bundle_files[$opt-1]" ]]; then
-            if [ ! "$(contains "$opt" "${fsel[@]}")" ]; then
+            if [[ ! "$(contains "$opt" "${fsel[@]}")" ]]; then
               fsel+=("$opt")
               info "file $opt added to selection"
             else
@@ -1904,9 +1885,9 @@ function split_commits ()
         # Migrate selected files.
         #
         m)
-          if [ "${#fsel[@]}" -ne 0 ]; then
+          if [[ "${#fsel[@]}" -ne 0 ]]; then
             collect_selected_files
-            if [ "$mode" == "source" ]; then
+            if [[ "$mode" == "source" ]]; then
               migrate_src
             else
               migrate_dst
@@ -1914,7 +1895,7 @@ function split_commits ()
 
             update_bundle_files "$operation_result"
 
-            if [ "$operation_result" ]; then
+            if [[ "$operation_result" ]]; then
               fsel=()
               need_push=true
               break
@@ -1926,13 +1907,13 @@ function split_commits ()
         # Drop selected files.
         #
         d)
-          if [ "${#fsel[@]}" -ne 0 ]; then
+          if [[ "${#fsel[@]}" -ne 0 ]]; then
             collect_selected_files
             drop
 
             update_bundle_files "$operation_result"
 
-            if [ "$operation_result" ]; then
+            if [[ "$operation_result" ]]; then
               fsel=()
               need_push=true
               break
@@ -1993,12 +1974,12 @@ while true; do
   # performing complex house-keeping, after certain operations (e.g.,
   # migration) we will just re-initialize the state from scratch.
   #
-  if [ "$init" ]; then
+  if [[ "$init" ]]; then
     init_globals
 
-    if [ "${#pending_seq[@]}" -eq 0 ]; then
+    if [[ "${#pending_seq[@]}" -eq 0 ]]; then
       info "good news, nothing to manage"
-      if [ ! "$need_push" ]; then
+      if [[ ! "$need_push" ]]; then
         exit 0
       fi
     fi
@@ -2039,7 +2020,7 @@ while true; do
       src_path_info "$f" | readarray -t fi
       ftype="${fi[0]}"
 
-      if [ "$ftype" == "unmanaged" ]; then
+      if [[ "$ftype" == "unmanaged" ]]; then
         # File is unmanaged (and may or may not exist).
         #
         info "? $f"
@@ -2057,9 +2038,9 @@ while true; do
         # Note that, in destination-management mode, there can be no ownership
         # manifests in `file_commits`.
         #
-        if [ "${file_commits[$f]}" == "$h" ]; then
+        if [[ "${file_commits[$f]}" == "$h" ]]; then
           info "  $f  $sz"  # Last added or moved by the current commit.
-        elif [ -v "file_commits[$f]" ]; then
+        elif [[ -v "file_commits[$f]" ]]; then
           info "! $f  $sz"  # Deleted and added back by subsequent commits.
         elif [[ ("$mode" == "source") || ("$ftype" != "ownership") ]]; then
           # File was deleted and never added again and, if we're in
@@ -2107,7 +2088,7 @@ while true; do
       #
       [0-9]*)
         if [[ ("$opt" =~ ^[1-9][0-9]*$) && -v "pending_seq[$opt-1]" ]]; then
-          if [ ! "$(contains "$opt" "${bundle[@]}")" ]; then
+          if [[ ! "$(contains "$opt" "${bundle[@]}")" ]]; then
             bundle+=("$opt")
             info "commit $opt (${pending_seq[$opt-1]}) \
 added to selected bundle"
@@ -2121,16 +2102,16 @@ added to selected bundle"
       # Migrate the commit bundle.
       #
       m)
-        if [ "${#bundle[@]}" -ne 0 ]; then
+        if [[ "${#bundle[@]}" -ne 0 ]]; then
           collect_bundle_files  # Prints error if `bundle_files` left empty.
 
-          if [ "${#bundle_files[@]}" -ne 0 ]; then
-            if [ "$mode" == "source" ]; then
+          if [[ "${#bundle_files[@]}" -ne 0 ]]; then
+            if [[ "$mode" == "source" ]]; then
               migrate_src
             else
               migrate_dst
             fi
-            if [ "$operation_result" ]; then
+            if [[ "$operation_result" ]]; then
               need_push=true
               init=true
               break
@@ -2143,12 +2124,12 @@ added to selected bundle"
       # Drop the commit bundle.
       #
       d)
-        if [ "${#bundle[@]}" -ne 0 ]; then
+        if [[ "${#bundle[@]}" -ne 0 ]]; then
           collect_bundle_files # Prints error if `bundle_files` left empty.
 
-          if [ "${#bundle_files[@]}" -ne 0 ]; then
+          if [[ "${#bundle_files[@]}" -ne 0 ]]; then
             drop
-            if [ "$operation_result" ]; then
+            if [[ "$operation_result" ]]; then
               need_push=true
               init=true
               break
@@ -2162,10 +2143,10 @@ added to selected bundle"
       # bundle's files).
       #
       s)
-        if [ "${#bundle[@]}" -ne 0 ]; then
+        if [[ "${#bundle[@]}" -ne 0 ]]; then
           collect_bundle_files  # Prints error if `bundle_files` left empty.
 
-          if [ "${#bundle_files[@]}" -ne 0 ]; then
+          if [[ "${#bundle_files[@]}" -ne 0 ]]; then
             split_commits
 
             # Note that the global state is re-initialized even if nothing was
@@ -2200,7 +2181,7 @@ added to selected bundle"
       # Quit.
       #
       q)
-        if [ ! "$need_push" ]; then
+        if [[ ! "$need_push" ]]; then
           exit 0
         fi
 
