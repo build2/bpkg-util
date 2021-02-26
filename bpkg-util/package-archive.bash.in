@@ -19,9 +19,9 @@ if [ ! -v bpkg_util_bpkg ]; then
   exit 1
 fi
 
-# Extract the package information from a package archive and print it in the
-# '<name> <version> <project>' form, where the project field is empty if the
-# project value is not specified in the manifest.
+# Extract the package information from a package archive and print it to
+# stdout in the '<name>\n<version>\n<project>\n' form, where the project field
+# is empty if the project value is not specified in the manifest.
 #
 # Note that, in particular, it verifies that the archive file name matches the
 # package name and version.
@@ -57,14 +57,17 @@ function bpkg_util_pkg_verify_archive () # <path>
 
   butl_manifest_parser_finish
 
-  echo -n "$name $version $project"
+  echo "$name"
+  echo "$version"
+  echo "$project"
 }
 
 # Search for package archives in a directory using the package name and
-# version pattern and printing their paths newline-separated. If the version
-# argument is '*', then print archives for all package versions. Otherwise if
-# the version contains the trailing '*', then print archives for all revisions
-# of the specified version and for the exact version otherwise. For example:
+# version pattern and printing their paths one per line to stdout. If the
+# version argument is '*', then print archives for all package versions.
+# Otherwise if the version contains the trailing '*', then print archives for
+# all revisions of the specified version and for the exact version otherwise.
+# For example:
 #
 # bpkg_util_pkg_find_archives foo '*'    dir/
 # bpkg_util_pkg_find_archives foo '1.0*' dir/
@@ -73,20 +76,14 @@ function bpkg_util_pkg_verify_archive () # <path>
 # Note that the resulting archive paths include the specified directory as a
 # prefix.
 #
-# NOTE: this function can be called with overriden IFS.
-#
 function bpkg_util_pkg_find_archives () # <name> <version> <dir>
-{
-  IFS=$' \t\n' bpkg_util_pkg_find_archives_impl "$@"
-}
-
-function bpkg_util_pkg_find_archives_impl ()
 {
   local nam="$1"
   local ver="$2"
   local dir="$3"
 
-  local r=""
+  local r=()
+  local f
 
   if [ -d "$dir" ]; then
     local vr # Version with the revision stripped, if search for revisions.
@@ -103,10 +100,9 @@ function bpkg_util_pkg_find_archives_impl ()
     # '1.2.3+2*': foo-1.2.3.tar.gz, foo-1.2.3+1.tar.gz, foo-1.2.30.tar.gz,
     # etc) and return those which package name and version match properly.
     #
-    local f
     while read f; do
       local p
-      p=($(bpkg_util_pkg_verify_archive "$f"))
+      bpkg_util_pkg_verify_archive "$f" | readarray -t p
 
       local n="${p[0]}"
       local v="${p[1]}"
@@ -116,36 +112,25 @@ function bpkg_util_pkg_find_archives_impl ()
               "$v" == "$ver" || \
               ( -n "$vr" && "$v" =~ ^"$vr"(\+[0-9]+)?$ )) ]]; then
 
-        if [ -n "$r" ]; then
-          r="$r"$'\n'"$f"
-        else
-          r="$f"
-        fi
+        r+=("$f")
       fi
     done < <(find "$dir" -type f -name "$np")
   fi
 
-  if [ -n "$r" ]; then
-    echo -n "$r"
-  fi
+  for f in "${r[@]}"; do
+    echo "$f"
+  done
 }
 
 # Search for a package archive in a directory using a file name pattern. If
-# the archive is found, then print the package information in the
-# '<path>\n<name>\n<version>\n<project>' form, where the project field is
+# the archive is found, then print the package information to stdout in the
+# '<path>\n<name>\n<version>\n<project>\n' form, where the project field is
 # empty if the project value is not specified in the manifest.
 #
 # Note that if there are multiple archives matching the pattern, then it is
 # unspecified which one is picked.
 #
-# NOTE: this function can be called with overriden IFS.
-#
 function bpkg_util_pkg_find_archive () # <pattern> <dir>
-{
-  IFS=$' \t\n' bpkg_util_pkg_find_archive_impl "$@"
-}
-
-function bpkg_util_pkg_find_archive_impl ()
 {
   local pat="$1"
   local dir="$2"
@@ -156,14 +141,17 @@ function bpkg_util_pkg_find_archive_impl ()
     # We could probably use -print -quit but this is not portable (NetBSD
     # needs -exit instead of -quit).
     #
-    f="$(find "$dir" -type f -name "$pat" | head -n 1)"
+    f="$(find "$dir" -type f -name "$pat" | sed -n -e '1p')"
 
     if [ -n "$f" ]; then
 
       local p
-      p=($(bpkg_util_pkg_verify_archive "$f"))
+      bpkg_util_pkg_verify_archive "$f" | readarray -t p
 
-      printf "$f\n${p[0]}\n${p[1]}\n${p[2]}"
+      echo "$f"
+      echo "${p[0]}"
+      echo "${p[1]}"
+      echo "${p[2]}"
       return
     fi
   fi

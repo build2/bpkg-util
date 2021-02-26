@@ -8,13 +8,13 @@
 bpkg_util_bpkg=bpkg
 
 trap "{ exit 1; }" ERR
-set -o errtrace # Trap ERR in functions.
+set -o errtrace     # Trap in functions and subshells.
+set -o pipefail     # Fail if any pipeline command fails.
+shopt -s lastpipe   # Execute last pipeline command in the current shell.
+shopt -s nullglob   # Expand no-match globs to nothing rather than themselves.
 
 @import bpkg-util/package-archive@
 
 # Call the function passed on the command line.
 #
-# Note that we reset IFS to make sure that the function being tested is not
-# affected by its value set by the caller.
-#
-IFS= "$@"
+"$@"

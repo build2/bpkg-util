@@ -539,9 +539,10 @@ function extract_pkg_info () # <archive>
 {
   local arc="$1"
 
-  local r
-  r=($(bpkg_util_pkg_verify_archive "$arc")) # <name> <version> <project>
-  if [[ ! -v r[2] ]]; then
+  local r # (<name> <version> <project>)
+  bpkg_util_pkg_verify_archive "$arc" | readarray -t r
+
+  if [[ -z "${r[2]}" ]]; then
     r[2]="${r[0]}"
   fi
 
@@ -579,8 +580,8 @@ function check_pkg_duplicate () # <pkg-name> <pkg-version>
     # Use <name>-<version>.* without .tar.gz in case we want to support more
     # archive types later.
     #
-    IFS=$'\n' eval \
-    'p=($(bpkg_util_pkg_find_archive "$name-$version.*" "$dst_dir/$sd"))'
+    bpkg_util_pkg_find_archive "$name-$version.*" "$dst_dir/$sd" | \
+    readarray -t p
 
     if [[ "${#p[@]}" -ne 0 ]]; then
       local a="${p[0]}"
@@ -635,12 +636,12 @@ function remove_pkg_archives ()
 
   # Search for replacement candidates.
   #
-  local pkgs=()                 # Packages to be considered for replacement.
+  local pkgs= # Packages to be considered for replacement.
 
-  IFS=$'\n' eval \
-  'pkgs=($(bpkg_util_pkg_find_archives "$name" \
-                                       "$vpat" \
-                                       "$dst_dir/${dst_sections[$dsect]}"))'
+  bpkg_util_pkg_find_archives "$name" \
+                              "$vpat" \
+                              "$dst_dir/${dst_sections[$dsect]}" | \
+  readarray -t pkgs
 
   # For each replacement candidate, ask for confirmation and, depending on the
   # answer, either remove it from the destination repository or leave it in
@@ -1374,8 +1375,9 @@ function check_drop_ownership_consistency () # <proj>
           local frel="${f#$rd/}"  # Path made relative to repo dir.
           if [[ ! "$(managed_repo "$rd")" ||
                 ! "$(contains "$frel" "${bundle_files[@]}")" ]]; then
-            local p
-            p=($(bpkg_util_pkg_verify_archive "$f"))  # (name ver proj)
+            local p # (name ver proj)
+            bpkg_util_pkg_verify_archive "$f" | readarray -t p
+
             unsel_pkg_names["${p[0]}"]=
           fi
         done < <(find "$pd" -type f -not -name "*.manifest")
