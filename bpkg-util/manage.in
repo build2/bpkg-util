@@ -53,8 +53,10 @@
 # or package archives (not ownership manifests) migrated to its counterpart
 # section (also in the destination repository). These mode-specific source
 # directories are called "managed directories" and the files they contain
-# "managed files", excluding those with an invalid path (project component is
-# missed, etc); any other directory or file is "unmanaged".
+# "managed files". The "unmanaged files" include any file outside of a managed
+# directory, any ownership manifest not related (by package name or project
+# name) to a managed package archive, and any file inside a managed directory
+# with an invalid path (project component is missed, etc).
 #
 # The destination-management mode is actually just a name used to refer to a
 # number of more specific, near-identical modes distinguished only by the
@@ -81,7 +83,8 @@
 #
 #   Enter the stable-management mode: manage the stable->legacy transitions in
 #   the destination repository. Note that commits/files cannot be dropped in
-#   this mode.
+#   this mode and, by extension, it does not support any operations on
+#   ownership manifests.
 #
 # --alpha[=<filter>]
 #
@@ -308,175 +311,6 @@ if [[ ("$mode" != "source") && ! -v "src_sections[$mode]" ]]; then
   error "section '$mode' not configured in the destination repository"
 fi
 
-# Contains the hashes of the pending commits in chronological order.
-#
-pending_seq=()
-
-# Maps from the file path to the commit it belongs to. A file may have been
-# added and removed by earlier commits and could thus be migrated with the
-# wrong commit unless care is taken (see the example in the migration notes
-# below). Every file contained in this map exists on disk.
-#
-declare -A file_commits
-
-# Initialize global variables that depend on disk/repository state that is
-# modified by commit and file operations.
-#
-function init_globals ()
-{
-  pending_seq=()
-  file_commits=()
-
-  # Find all package archives and owner manifest files in the source
-  # repository.
-  #
-  # Every file in a repository section directory except *.manifest is a
-  # package archive and every file in the owners directory is a project or
-  # package owner manifest. Therefore run find separately on each section
-  # directory and the owners directory to build a list containing only
-  # package-related files.
-  #
-  # Store the relative to the repository directory file paths in an array,
-  # `src_files`, used to build the set of pending commits.
-  #
-  # Note that directories in `src_sections` may be deleted by certain
-  # operations (for example, if the last package is migrated out of a
-  # section).
-  #
-  local src_files=()
-
-  local s
-  for s in "${src_sections[@]}"; do
-    local d="$src_dir/$s"
-    if [[ -d "$d" ]]; then
-      local f
-      while read f; do
-        src_files+=("${f#$src_dir/}")
-      done < <(find "$d" -type f -not -name "*.manifest")
-    fi
-  done
-
-  if [[ -n "$src_owners" && -d "$src_dir/$src_owners" ]]; then
-    local f
-    while read f; do
-      src_files+=("${f#$src_dir/}")
-    done < <(find "$src_dir/$src_owners" -type f)
-  fi
-
-  # Build the set of pending commit hashes ("pending set").
-  #
-  # For each file in the source repository, find the commit it belongs to and
-  # store its abbreviated hash (as key) inside the `pending_set` associative
-  # array (note: unordered) and (as value) inside the `file_commits`
-  # associative array.
-  #
-  # If in destination-management mode, exclude from `pending_set` those
-  # commits without any package archives that match the pattern in `filter`.
-  #
-  local -A pending_set=()
-  local h
-  for f in "${src_files[@]}"; do
-
-    # -1:                  limit output to one commit (that is, the most
-    #                      recent)
-    # --diff-filter=A:     only show commits that added the specified file or
-    #                      moved it into its current location ('R' is useless
-    #                      if a path is specified)
-    # --pretty=format:%h:  output only the abbreviated commit hash
-    #
-    h="$(git -C "$src_dir" log -1 --diff-filter=A --pretty=format:%h -- "$f")"
-
-    # Note that the hash cannot be empty because, after our clean checks at
-    # the top, every file on disk must have been added by some commit (that
-    # is, there can be no untracked files).
-
-    # Add the commit to the pending set unless the current file is filtered
-    # out.
-    #
-    # Note: `src_files` can contain only package archives if we're in
-    # destination-management mode so there's no need to check the file type.
-    #
-    # Note: $filter must be unquoted to match as a wildcard pattern.
-    #
-    if [[ "$mode" == "source" ||
-          ("$(basename "$(dirname "$f")")" == $filter) || # Project name?
-          ("$(basename "$f")" == $filter.*) ]]; then  # Filename (with ext)?
-      pending_set["$h"]=true
-    fi
-
-    # Add the file and commit to `file_commits` even if the current commit was
-    # not added to `pending_set` above otherwise this file could get
-    # incorrectly attributed to an earlier, unfiltered commit (consider the
-    # edge case example under the general migration comments (above
-    # migrate_src()) with a filter of "bar.*").
-    #
-    file_commits["$f"]="$h"
-  done
-
-  # Arrange the pending commits in the chronological order.
-  #
-  # Go through the most recent commits in the git log which added or
-  # moved/renamed one or more files, skipping those not present in the pending
-  # set and keeping count to bail out as soon as we ordered all of them.
-  #
-  local i
-  for (( i=0; i != "${#pending_set[@]}"; )); do
-    read h # The abbreviated commit hash.
-
-    # If this is a pending commit, prepend its hash to the ordered array.
-    #
-    if [[ "${pending_set[$h]}" ]]; then
-      pending_seq=("$h" "${pending_seq[@]}")
-      ((++i))
-    fi
-
-    # --diff-filter=AR:     only show commits that added or renamed files
-    #
-  done < <(git -C "$src_dir" log --diff-filter=AR --pretty=format:%h)
-}
-
-# Clean the source and destination repositories by discarding uncommitted
-# changes and removing unstaged files. (Note that the source repository cannot
-# have untracked files so we git-clean only the destination repository.)
-#
-function cleanup ()
-{
-  info "migration failed; resetting and cleaning repositories"
-
-  if ([[ "$mode" == "source" ]] && ! run git -C "$src_dir" reset --hard) ||
-     ! run git -C "$dst_dir" reset --hard                              ||
-     ! run git -C "$dst_dir" clean --force; then
-    info "failed to reset/clean repositories -- manual intervention required"
-  fi
-}
-
-# Return the subject of a git commit in the source repository.
-#
-function commit_subject () # <commit-hash>
-{
-  local h="$1"
-  git -C "$src_dir" log -n 1 --pretty=format:%s "$h"
-}
-
-# Return the list of files a commit added to or moved within the source
-# repository.
-#
-function commit_files () # <commit-hash>
-{
-  local h="$1"
-
-  # git-diff-tree arguments:
-  #
-  # --diff-filter=A:  select only files that were added.
-  # -z:               don't munge file paths and separate output fields with
-  #                   NULs.
-  # -r:               recurse into subtrees (directories).
-  #
-  git -C "$src_dir" diff-tree \
-      --no-commit-id --name-only --diff-filter=A -z -r \
-      "$h"
-}
-
 # Print information about the path of a source repository file.
 #
 # The information includes its class (package archive, ownership manifest, or
@@ -557,6 +391,231 @@ function extract_pkg_info () # <archive>
   for e in "${r[@]}"; do
     echo "$e"
   done
+}
+
+# Contains the hashes of the pending commits in chronological order.
+#
+pending_seq=()
+
+# Maps from the file path to the commit it belongs to. A file may have been
+# added and removed by earlier commits and could thus be migrated with the
+# wrong commit unless care is taken (see the example in the migration notes
+# below). Every file contained in this map exists on disk.
+#
+declare -A file_commits
+
+# Initialize global variables that depend on disk/repository state that is
+# modified by commit and file operations.
+#
+function init_globals ()
+{
+  pending_seq=()
+  file_commits=()
+
+  # Find all package archives and owner manifest files in the source
+  # repository.
+  #
+  # Every file in a repository section directory except *.manifest is a
+  # package archive and every file in the owners directory is a project or
+  # package owner manifest. Therefore run find separately on each section
+  # directory and the owners directory to build a list containing only
+  # package-related files.
+  #
+  # Store the relative to the repository directory file paths in an array,
+  # `src_files`, used to build the set of pending commits.
+  #
+  # Note that directories in `src_sections` may be deleted by certain
+  # operations (for example, if the last package is migrated out of a
+  # section).
+  #
+  local src_files=()
+
+  local s
+  for s in "${src_sections[@]}"; do
+    local d="$src_dir/$s"
+    if [[ -d "$d" ]]; then
+      local f
+      while read f; do
+        src_files+=("${f#$src_dir/}")
+      done < <(find "$d" -type f -not -name "*.manifest")
+    fi
+  done
+
+  # Don't load ownership manifests if in stable-management mode because it
+  # does not support any operations on them.
+  #
+  if [[ ("$mode" != "stable") &&
+        -n "$src_owners" && -d "$src_dir/$src_owners" ]]; then
+    local f
+    while read f; do
+      src_files+=("${f#$src_dir/}")
+    done < <(find "$src_dir/$src_owners" -type f)
+  fi
+
+  # Build the set of pending commit hashes ("pending set").
+  #
+  # For each file in the source repository, find the commit it belongs to and
+  # store its abbreviated hash (as value) inside the `file_commits`
+  # associative array (note: unordered). With some exceptions (see below),
+  # these files' commits will also be stored (as key) inside the `pending_set`
+  # associative array.
+  #
+  # If in destination-management mode:
+  #
+  #   - Unless in stable-management mode (which does not operate on ownership
+  #     manifests at all), do not add unmanaged ownership manifests' commits
+  #     to `pending_set`. (Note that these commits could be added as a result
+  #     of other files, and that, in source-management mode, all ownership
+  #     manifests are managed.)
+  #
+  #     The `managed_projs` and `managed_pkgnames` associative arrays store
+  #     the project and package names, respectively, of every package archive
+  #     in the managed section and are used to identify unmanaged ownership
+  #     manifests (see below). (Both are empty in source-management and
+  #     stable-management modes.)
+  #
+  #   - Exclude from `pending_set` those commits without any package archives
+  #     that match the pattern in `filter`.
+  #
+  # Every file in `src_files` is added to `file_commits` without exception
+  # (that is, regardless of whether or not its commit was added to
+  # `pending_set`) otherwise it could potentially get incorrectly attributed
+  # to an earlier, unfiltered commit (consider the edge case example under the
+  # general migration comments (above migrate_src()) with a filter of "bar.*")
+  # or caused to look like it's been deleted from disk when displayed to the
+  # user.
+  #
+  local -A pending_set=()       # Hashes of the pending commits.
+  local -A managed_projs=()     # Project names of all managed archives.
+  local -A managed_pkgnames=()  # Package names of all managed archives.
+  local h
+  for f in "${src_files[@]}"; do
+
+    # -1:                  limit output to one commit (that is, the most
+    #                      recent)
+    # --diff-filter=A:     only show commits that added the specified file or
+    #                      moved it into its current location ('R' is useless
+    #                      if a path is specified)
+    # --pretty=format:%h:  output only the abbreviated commit hash
+    #
+    h="$(git -C "$src_dir" log -1 --diff-filter=A --pretty=format:%h -- "$f")"
+
+    # Note that the hash cannot be empty because, after our clean checks at
+    # the top, every file on disk must have been added by some commit (that
+    # is, there can be no untracked files).
+
+    file_commits["$f"]="$h"
+
+    # Don't add unmanaged ownership manifests to `pending_set` (by skipping
+    # them) if in any destination-management mode but stable-management (in
+    # which case there are none in `src_files`). An ownership manifest is
+    # unmanaged if its project or package name has not been seen (archives
+    # come before ownership manifests in `src_files`). To this end, also
+    # record the package and project names of every package archive.
+    #
+    if [[ ("$mode" != "source") && ("$mode" != "stable") ]]; then
+      local fi
+      src_path_info "$f" | readarray -t fi
+      local ftype="${fi[0]}" # File type.
+
+      case "$ftype" in
+        "archive")
+          # Record the package and project names of this package archive.
+          #
+          local p
+          extract_pkg_info "$src_dir/$f" | readarray -t p # (name ver proj)
+          managed_pkgnames["${p[0]}"]=true
+          managed_projs["${p[2]}"]=true
+          ;;
+        "ownership")
+          # Skip this ownership manifest if its package or project name has
+          # not been seen (which means it's unmanaged).
+          #
+          local k="$(basename $(dirname "$f"))"
+          if [[ (("$f" == */package-owner.manifest) &&
+                 ! "${managed_pkgnames[$k]}") ||
+                (("$f" == */project-owner.manifest) &&
+                 ! "${managed_projs[$k]}") ]]; then
+            continue
+          fi
+          ;;
+      esac
+    fi
+
+    # Add the commit to the pending set unless the current file is filtered
+    # out.
+    #
+    # Note: $filter must be unquoted to match as a wildcard pattern.
+    #
+    if [[ ("$mode" == "source") ||
+          ("$(basename "$(dirname "$f")")" == $filter) || # Project name?
+          ("$(basename "$f")" == $filter.*) ]]; then  # Filename (with ext)?
+      pending_set["$h"]=true
+    fi
+  done
+
+  # Arrange the pending commits in the chronological order.
+  #
+  # Go through the most recent commits in the git log which added or
+  # moved/renamed one or more files, skipping those not present in the pending
+  # set and keeping count to bail out as soon as we ordered all of them.
+  #
+  local i
+  for (( i=0; i != "${#pending_set[@]}"; )); do
+    read h # The abbreviated commit hash.
+
+    # If this is a pending commit, prepend its hash to the ordered array.
+    #
+    if [[ "${pending_set[$h]}" ]]; then
+      pending_seq=("$h" "${pending_seq[@]}")
+      ((++i))
+    fi
+
+    # --diff-filter=AR:     only show commits that added or renamed files
+    #
+  done < <(git -C "$src_dir" log --diff-filter=AR --pretty=format:%h)
+}
+
+# Clean the source and destination repositories by discarding uncommitted
+# changes and removing unstaged files. (Note that the source repository cannot
+# have untracked files so we git-clean only the destination repository.)
+#
+function cleanup ()
+{
+  info "migration failed; resetting and cleaning repositories"
+
+  if ([[ "$mode" == "source" ]] && ! run git -C "$src_dir" reset --hard) ||
+     ! run git -C "$dst_dir" reset --hard                              ||
+     ! run git -C "$dst_dir" clean --force; then
+    info "failed to reset/clean repositories -- manual intervention required"
+  fi
+}
+
+# Return the subject of a git commit in the source repository.
+#
+function commit_subject () # <commit-hash>
+{
+  local h="$1"
+  git -C "$src_dir" log -n 1 --pretty=format:%s "$h"
+}
+
+# Return the list of files a commit added to or moved within the source
+# repository.
+#
+function commit_files () # <commit-hash>
+{
+  local h="$1"
+
+  # git-diff-tree arguments:
+  #
+  # --diff-filter=A:  select only files that were added.
+  # -z:               don't munge file paths and separate output fields with
+  #                   NULs.
+  # -r:               recurse into subtrees (directories).
+  #
+  git -C "$src_dir" diff-tree \
+      --no-commit-id --name-only --diff-filter=A -z -r \
+      "$h"
 }
 
 # Exit with an error if a package which is a duplicate of or is in conflict
@@ -2037,19 +2096,24 @@ while true; do
           sz="$(file_size "$f")"
         fi
 
-        # Note that, in destination-management mode, there can be no ownership
-        # manifests in `file_commits`.
-        #
         if [[ "${file_commits[$f]}" == "$h" ]]; then
-          info "  $f  $sz"  # Last added or moved by the current commit.
+          # Last added or moved by the current commit.
+          #
+          # If a commit included some managed and some unmanaged ownership
+          # manifests then it will not have been filtered out at the top and
+          # the unmanaged ownerships will also be shown here. (For an example,
+          # see the first commit output by `bpkg-util-manage --alpha` on the
+          # real cppget.org repos.) I don't think it's worth checking here
+          # that ownerships are managed because those sorts of commits should
+          # be rare. This script also refuses to operate on packages from
+          # different projects or sections.
+          #
+          info "  $f  $sz"
         elif [[ -v "file_commits[$f]" ]]; then
           info "! $f  $sz"  # Deleted and added back by subsequent commits.
-        elif [[ ("$mode" == "source") || ("$ftype" != "ownership") ]]; then
-          # File was deleted and never added again and, if we're in
-          # destination-management mode, is not an ownership manifest.
-          #
-          # Note that actioned files of partially actioned commits will also
-          # appear this way.
+        else
+          # File was deleted and never added again. Note that actioned files
+          # of partially actioned commits will also appear this way.
           #
           info "* $f"
         fi
