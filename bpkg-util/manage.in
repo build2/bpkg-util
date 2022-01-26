@@ -2156,7 +2156,8 @@ while true; do
         if [[ ("$opt" =~ ^[1-9][0-9]*$) && -v "pending_seq[$opt-1]" ]]; then
           if [[ ! "$(contains "$opt" "${bundle[@]}")" ]]; then
             bundle+=("$opt")
-            info "commit $opt (${pending_seq[$opt-1]}) \
+	    h="${pending_seq[$opt-1]}"
+            info "commit $opt ($h) \"$(commit_subject "$h")\" \
 added to selected bundle"
           else
             info "commit $opt is already in the bundle"
