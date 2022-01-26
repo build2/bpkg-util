@@ -9,7 +9,7 @@ else
   bpkg_util_package_archive=true
 fi
 
-@import libbutl/manifest-parser@
+@import libbutl.bash/manifest-parser@
 
 # We expect the user to set the bpkg_util_bpkg variable to the bpkg program
 # path.
