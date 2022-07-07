@@ -6,7 +6,7 @@
 # find utility to fail with the 'no such file or directory' error. Thus, we
 # clone the archives into the test working directories and search there.
 #
-clone_arcs = \
+clone_arcs = [cmdline] \
   cp $src_base/libhello-0.1.0.tar.gz $src_base/libhello-0.1.0+1.tar.gz ./
 
 : pkg-verify-archive
