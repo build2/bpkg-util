@@ -1,8 +1,7 @@
 # file      : build/root.build
 # license   : MIT; see accompanying LICENSE file
 
-# Bash.
+# Work around issue with sanitizers messing up rpath (see issue #1219).
 #
-using bash
-
-bpkg-util/bash{*}: install.subdirs = true
+if ($build.mode != 'skeleton')
+  using bash
