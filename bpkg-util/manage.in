@@ -2144,7 +2144,7 @@ while true; do
     # IFS) because neither space nor tab characters (the other members of IFS)
     # can occur in the keys.
     #
-    bundle=($(sed 's/ /\n/g' <<<"${bundle[*]}" | sort -))
+    bundle=($(sed 's/ /\n/g' <<<"${bundle[*]}" | sort --numeric-sort -))
 
     printf "\n"
     read -p "[${bundle[*]}][<N>,m,d,s,c,p,l,q,?]: " opt
