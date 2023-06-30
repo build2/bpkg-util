@@ -1,6 +1,6 @@
 : 1
 name: bpkg-util
-version: 0.16.0-a.0.z
+version: 0.16.0
 project: build2
 summary: extra build2 package management utilities
 license: MIT
@@ -16,7 +16,7 @@ builds: host
 builds: -windows ; Requires bash.
 builds: -macos   ; Requires bash >= 4.3.
 requires: bash >= 4.3
-depends: * build2 >= 0.15.0-
-depends: * bpkg >= 0.15.0-
-depends: bpkg [0.16.0-a.0.1 0.16.0-a.1)
-depends: libbutl.bash [0.16.0-a.0.1 0.16.0-a.1)
+depends: * build2 >= 0.16.0-
+depends: * bpkg >= 0.16.0-
+depends: bpkg ^0.16.0
+depends: libbutl.bash ^0.16.0
