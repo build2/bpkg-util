@@ -3,8 +3,8 @@ summary: extra build2 package management utilities
 
 :
 role: prerequisite
-location: ../bpkg.git##HEAD
+location: ../bpkg.git#HEAD
 
 :
 role: prerequisite
-location: ../libbutl.bash.git##HEAD
+location: ../libbutl.bash.git#HEAD
