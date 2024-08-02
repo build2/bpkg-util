@@ -9,6 +9,7 @@ $out_root/
 switch $import.target
 {
   case exe{bpkg-util-publish}
+  case bash{utility}
   case bash{package-archive}
     export $out_root/bpkg-util/$import.target
 }
