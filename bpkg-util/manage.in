@@ -313,9 +313,10 @@ fi
 
 # Print information about the path of a source repository file.
 #
-# The information includes its class (package archive, ownership manifest, or
-# unmanaged), the project directory, and in the case of package archives, the
-# section directory.
+# The information includes its class (package archive, ownership manifest,
+# package review manifest, or unmanaged); the project directory; in the case
+# of package archives, the section directory; and in the case of package
+# review manifests, the package name.
 #
 # <path> must be relative to the source repository directory (`src_dir`).
 #
@@ -323,14 +324,16 @@ fi
 # print `archive\n<project>\n<section-dir>\n`. The section directory will be
 # relative to the source repository directory.
 #
-# Otherwise, if the path refers to a managed ownership manifest file in the
-# source repository, then print `ownership\n<project>\n`.
+# If the path refers to a managed ownership manifest file in the source
+# repository, then print `ownership\n<project>\n`.
+#
+# If the path refers to a managed package review manifest file in the source
+# repository, then print `review\n<project>\n<package>\n`.
 #
 # Otherwise the file is unmanaged; print `unmanaged\n`.
 #
 # Note that the function doesn't validate the file path exhaustively and may
-# classify improperly named file (invalid base name, etc) as an archive or
-# ownership.
+# classify an improperly named file as an archive or ownership in some cases.
 #
 function src_path_info () # <path>
 {
@@ -345,20 +348,39 @@ function src_path_info () # <path>
   for s in "${src_sections[@]}"; do
     if [[ "$f" =~ ^"$s"/([^/]+)/[^/]+$ ]]; then
       echo "archive"
-      echo "${BASH_REMATCH[1]}"
+      echo "${BASH_REMATCH[1]}" # Project
       echo "$s"
       return
     fi
   done
 
-  # Not a managed archive path, so check whether it's an ownership
-  # manifest. Valid source repository ownership manifest paths start with the
-  # directory in `src_owners` and is followed by at least one subdirectory
-  # (the project directory, again).
+  # Not a managed archive path, so check whether it's an ownership or package
+  # review manifest.
+
+  # If the ownership information directory is not configured then it cannot be
+  # ownership or a review and is thus unmanaged.
   #
-  if [[ -n "$src_owners" && ("$f" =~ ^"$src_owners"/([^/]+)/.+$) ]]; then
+  if [[ -z "$src_owners" ]]; then
+    echo "unmanaged"
+  fi
+
+  # Check whether it's a package review or ownership manifest.
+  #
+  # Examples of valid paths:
+  #
+  #   Package review manifest:   foo/libfoo/1.2.3/reviews.manifest
+  #
+  #   Project ownership:         foo/project-owner.manifest
+  #   Package ownership:         foo/libfoo/package-owner.manifest
+  #
+  if [[ "$f" =~ ^"$src_owners"/([^/]+)/([^/]+)/[^/]+/reviews.manifest$ ]]; then
+    echo "review"
+    echo "${BASH_REMATCH[1]}" # Project
+    echo "${BASH_REMATCH[2]}" # Package
+  elif [[ "$f" =~ ^"$src_owners"/([^/]+)/project-owner.manifest$ ||
+          "$f" =~ ^"$src_owners"/([^/]+)/[^/]+/package-owner.manifest$ ]]; then
     echo "ownership"
-    echo "${BASH_REMATCH[1]}"
+    echo "${BASH_REMATCH[1]}" # Project
   else
     echo "unmanaged"
   fi
@@ -536,6 +558,16 @@ function init_globals ()
                  ! "${managed_pkgnames[$k]}") ||
                 (("$f" == */project-owner.manifest) &&
                  ! "${managed_projs[$k]}") ]]; then
+            continue
+          fi
+          ;;
+        "review")
+          local pname="${fi[2]}" # Package name.
+
+          # Skip this package review manifest if its package name has not been
+          # seen (which means it's unmanaged).
+          #
+          if [[ ! "${managed_pkgnames[$pname]}" ]]; then
             continue
           fi
           ;;
@@ -942,6 +974,7 @@ function src_section_name () # <section-dir>
 #      "remove <package>/<version>"
 #      "remove owners/<project>/project-owner.manifest"
 #      "remove owners/<project>/<package>/package-owner.manifest"
+#      "remove owners/<project>/<package>/<version>/reviews.manifest"
 #
 #    Destination repository:
 #
@@ -951,6 +984,7 @@ function src_section_name () # <section-dir>
 #      "replace <package>/<version> with <version>"     (if replacing)
 #      "add owners/<project>/project-owner.manifest"
 #      "add owners/<project>/<package>/package-owner.manifest"
+#      "add owners/<project>/<package>/<version>/reviews.manifest"
 #
 function migrate_src ()
 {
@@ -958,7 +992,9 @@ function migrate_src ()
 
   # Check that all files in the bundle are in the bundle section and/or bundle
   # project before migrating any of them. Classify each file as a package
-  # archive or ownership manifest as we go along, based on its path.
+  # archive or ownership/package review manifest as we go along, based on its
+  # path. Note that ownership and package review manifests are treated
+  # identically here.
   #
   # The bundle section is derived from the first package archive encountered
   # and the bundle project from the first package archive or ownership
@@ -968,6 +1004,7 @@ function migrate_src ()
   local proj=              # The bundle (source) project.
   local pkgs=()            # The bundle's package archives.
   local owns=()            # The bundle's ownership manifests.
+  local revs=()            # The bundle's package review manifests.
 
   local f
   for f in "${bundle_files[@]}"; do
@@ -978,6 +1015,9 @@ function migrate_src ()
 
     if [[ "$ftype" == "ownership" ]]; then
       owns+=("$f")
+
+    elif [[ "$ftype" == "review" ]]; then
+      revs+=("$f")
 
     elif [[ "$ftype" == "archive" ]]; then
       pkgs+=("$f")
@@ -1046,10 +1086,10 @@ function migrate_src ()
     # consider it possible since the submit-git handler allows such a setup.
     #
     if [[ -n "$dst_owners" ]]; then
-      src_cmsg="Migrate $proj ownership info to $dst_repo_name"$'\n\n'
-      dst_cmsg="Migrate $proj ownership info from $src_repo_name"$'\n\n'
+      src_cmsg="Migrate $proj ownership/review info to $dst_repo_name"$'\n\n'
+      dst_cmsg="Migrate $proj ownership/review info from $src_repo_name"$'\n\n'
     else
-      src_cmsg="Remove $proj ownership info"$'\n\n'
+      src_cmsg="Remove $proj ownership/review info"$'\n\n'
       dst_cmsg= # Nothing to commit.
     fi
   fi
@@ -1139,7 +1179,7 @@ function migrate_src ()
   # Fail if an ownership manifest already exists in the destination
   # repository.
   #
-  for f in "${owns[@]}"; do
+  for f in "${owns[@]}" "${revs[@]}"; do
     src_cmsg+="  remove $f"$'\n'
 
     if [[ -n "$dst_owners" ]]; then
@@ -1285,7 +1325,7 @@ function migrate_dst ()
     # not be printed in the file list after the migration despite not having
     # been actioned.
     #
-    if [[ "$ftype" == "ownership" ]]; then
+    if [[ "$ftype" == "ownership" || "$ftype" == "review" ]]; then
       info "skipping '$f'"
       unset "bundle_files[$i]"
     fi
@@ -1373,21 +1413,21 @@ function migrate_dst ()
   read -p "press Enter to continue"
 }
 
-# Check that ownership consistency would be maintained if the bundle's files
-# were dropped.
+# Check that ownership and reviews consistency would be maintained if the
+# bundle's files were dropped.
 #
 # Print "true" to stdout if all checks passed, and nothing in case of failure.
 #
 # Fail if a drop would leave, in the real source or destination repositories,
-# package archives without package or project ownership, or package ownership
-# manifests without project ownership.
+# package archives without package/project ownership or reviews, or package
+# ownership/review manifests without project ownership.
 #
-# Note that in order to search for unselected packages and ownership
-# manifests, each repository's submit config is loaded again because the data
-# loaded during global init does not reflect the true state of the
+# Note that in order to search for unselected packages and ownership/package
+# review manifests, each repository's submit config is loaded again because
+# the data loaded during global init does not reflect the true state of the
 # repositories on disk if in destination-management mode.
 #
-function check_drop_ownership_consistency () # <proj>
+function check_drop_ownership_review_consistency () # <proj>
 {
   local proj="$1"  # Project name.
 
@@ -1447,17 +1487,19 @@ function check_drop_ownership_consistency () # <proj>
   find_unsel_pkg "$real_src_dir"
   find_unsel_pkg "$dst_dir"
 
-  # Find unselected package ownership from <proj> in the real source and
-  # destination repositories.
-  #
-  local unsel_pkg_owns= # True if there are unselected pkg ownership manifests.
+  # Find unselected package ownership and reviews from <proj> in the real
+  # source and destination repositories.
 
-  # Find unselected package ownership manifest from <proj> in the repository
-  # directory specified by <repo-dir> and, if found, set `unsel_pkg_owns` to
-  # true. See find_unsel_pkg() above for a note about the role `bundle_files`
-  # plays.
+  # True if there are unselected package ownership or review manifests.
   #
-  function find_unsel_pkg_owns ()  # <repo-dir>
+  local unsel_pkg_owns_revs=
+
+  # Find unselected package ownership or review manifests from <proj> in the
+  # repository directory specified by <repo-dir> and, if found, set
+  # `unsel_pkg_owns_revs` to true. See find_unsel_pkg() above for a note about
+  # the role `bundle_files` plays.
+  #
+  function find_unsel_pkg_owns_revs ()  # <repo-dir>
   {
     local rd="$1"  # Repository directory.
 
@@ -1471,29 +1513,30 @@ function check_drop_ownership_consistency () # <proj>
       while read f; do
         f="${f#$rd/}"  # Make path relative to repo dir.
 
-        if [[ ("$f" == */package-owner.manifest) &&
+        if [[ ("$f" == */package-owner.manifest ||
+               "$f" == */reviews.manifest) &&
               (! "$(managed_repo "$rd")" ||
                ! "$(contains "$f" "${bundle_files[@]}")") ]]; then
-          unsel_pkg_owns=true
+          unsel_pkg_owns_revs=true
           break
         fi
       done < <(find "$pd" -type f)
     fi
   }
 
-  find_unsel_pkg_owns "$real_src_dir"
-  find_unsel_pkg_owns "$dst_dir"
+  find_unsel_pkg_owns_revs "$real_src_dir"
+  find_unsel_pkg_owns_revs "$dst_dir"
 
-  # Fail if any ownership info about to be dropped would leave any ownerless
-  # package archives or package ownership manifests.
+  # Fail if any ownership or review info about to be dropped would leave any
+  # ownerless package archives.
   #
   local f
   for f in "${bundle_files[@]}"; do
     case "$f" in
       */project-owner.manifest)
-        if [[ ("${#unsel_pkg_names[@]}" -ne 0) || "$unsel_pkg_owns" ]]; then
+        if [[ ("${#unsel_pkg_names[@]}" -ne 0) || "$unsel_pkg_owns_revs" ]]; then
           info "cannot drop project ownership info without \
-associated packages and/or package ownership"
+associated packages and/or package ownership/reviews"
           return
         fi
         ;;
@@ -1502,6 +1545,18 @@ associated packages and/or package ownership"
         if [[ -v "unsel_pkg_names[$pname]" ]]; then
           info "cannot drop package ownership without associated packages"
           return
+        fi
+        ;;
+      */reviews.manifest)
+        local fi
+        src_path_info "$f" | readarray -t fi
+        local ftype="${fi[0]}"
+        if [[ "$ftype" == "review" ]]; then
+          local pname="${fi[2]}"
+          if [[ -v "unsel_pkg_names[$pname]" ]]; then
+            info "cannot drop package reviews without associated packages"
+            return
+          fi
         fi
         ;;
     esac
@@ -1551,13 +1606,15 @@ associated packages and/or package ownership"
 #     "  remove <package>/<version>"
 #     "  remove owners/<project>/project-owner.manifest"
 #     "  remove owners/<project>/<package>/package-owner.manifest"
+#     "  remove owners/<project>/<package>/<version>/reviews.manifest"
 #
-#   If dropping only ownership information:
+#   If dropping only ownership and/or review information:
 #
-#     "Drop <project> ownership (<reason>)"
+#     "Drop <project> ownership/review(s) (<reason>)"
 #
 #     "  remove owners/<project>/project-owner.manifest"
 #     "  remove owners/<project>/<package>/package-owner.manifest"
+#     "  remove owners/<project>/<package>/<version>/reviews.manifest"
 #
 function drop ()
 {
@@ -1570,8 +1627,9 @@ function drop ()
 
   # Check that all files in the bundle are in the bundle project and that all
   # package archives are in the bundle section before dropping any of
-  # them. Classify each file as a package archive or ownership manifest as we
-  # go along, based on its path.
+  # them. Classify each file as a package archive, ownership manifest, or
+  # package review manifest as we go along, based on its path. Note that
+  # ownership and package review manifests are treated identically here.
   #
   # The bundle section is derived from the first package archive encountered
   # and the bundle project from the first package archive or ownership
@@ -1588,6 +1646,7 @@ function drop ()
   local sect=                   # The bundle section name.
   local pkgs=()                 # Package archives to be dropped.
   local owns=()                 # Ownership manifests to be dropped.
+  local revs=()                 # Package review manifests to be dropped.
 
   local i
   for i in "${!bundle_files[@]}"; do
@@ -1597,11 +1656,12 @@ function drop ()
     local ftype="${fi[0]}" # Current file's type.
     local fproj="${fi[1]}" # Current file's project.
 
-    if [[ "$ftype" == "ownership" ]]; then
-      # Ask whether or not this ownership manifest should be dropped. Add it
-      # to `owns` if the user confirmed or, if the user declined, skip it by
-      # not adding it to `owns` and by removing it from `bundle_files` (to
-      # prevent check_drop_ownership_consistency() from thinking it's still
+    if [[ "$ftype" == "ownership" || "$ftype" == "review" ]]; then
+      # Ask whether or not this ownership/package review manifest should be
+      # dropped. Add it to `owns` or `revs` if the user confirmed or, if the
+      # user declined, skip it by not adding it to `owns`/`revs` and by
+      # removing it from `bundle_files` (to prevent
+      # check_drop_ownership_review_consistency() from thinking it's still
       # selected).
       #
       local opt=
@@ -1610,7 +1670,11 @@ function drop ()
       done
 
       if [[ "$opt" == y ]]; then
-        owns+=("$f")
+        if [[ "$ftype" == "ownership" ]]; then
+          owns+=("$f")
+        elif [[ "$ftype" == "review" ]]; then
+          revs+=("$f")
+        fi
       else
         info "skipping '$f'"
         unset "bundle_files[$i]"
@@ -1650,11 +1714,13 @@ function drop ()
   # There would be nothing to drop if the bundle consisted only of ownership
   # manifests and the user declined to drop all of them.
   #
-  # Note that check_drop_ownership_consistency() prints diagnostics in case of
-  # failure.
+  # Note that check_drop_ownership_review_consistency() prints diagnostics in
+  # case of failure.
   #
-  if [[ (("${#pkgs[@]}" -eq 0) && ("${#owns[@]}" -eq 0)) ||
-        ! "$(check_drop_ownership_consistency "$proj")" ]]; then
+  if [[ (("${#pkgs[@]}" -eq 0) &&
+         ("${#owns[@]}" -eq 0) &&
+         ("${#revs[@]}" -eq 0)) ||
+        ! "$(check_drop_ownership_review_consistency "$proj")" ]]; then
     return
   fi
 
@@ -1672,8 +1738,8 @@ function drop ()
   local cmsg= # Commit message.
   if [[ "${#pkgs[@]}" -ne 0 ]]; then # Bundle contains package archive(s).
     cmsg="Drop $proj from $sect ($reason)"$'\n\n'
-  else                             # Bundle contains only ownership manifests.
-    cmsg="Drop $proj ownership ($reason)"$'\n\n'
+  else # Bundle contains only ownership/package review manifests.
+    cmsg="Drop $proj ownership/review(s) ($reason)"$'\n\n'
   fi
 
   # Remove the bundle's files from the source repository and compose the
@@ -1696,7 +1762,7 @@ function drop ()
     run git -C "$src_dir" rm "$f" # Automatically removes empty directories.
   done
 
-  for f in "${owns[@]}"; do
+  for f in "${owns[@]}" "${revs[@]}"; do
     cmsg+="  remove $f"$'\n'
     run git -C "$src_dir" rm "$f" # Automatically removes empty directories.
   done
@@ -1755,6 +1821,7 @@ function push ()
 #   1/testing/foo/libfoo-1.2.3.tar.gz
 #   owners/foo/project-owner.manifest
 #   owners/foo/libfoo/package-owner.manifest
+#   owners/foo/libfoo/1.2.3/reviews.manifest
 #
 # 2 (c00l0fff) Add bar/1.2.3
 #
