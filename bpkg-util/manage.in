@@ -6,9 +6,12 @@
 # file      : bpkg-util/manage.in
 # license   : MIT; see accompanying LICENSE file
 
-# Interactively migrate packages and/or ownership manifests from a source git
-# repository to a destination git repository or drop them from the source
-# repository.
+# Interactively migrate packages, ownership manifests, or package review
+# manifests from a source git repository to a destination git repository or
+# drop them from the source repository.
+#
+# Project and package ownership manifests and package review manifests are
+# collectively referred to as "package metadata" or just "metadata".
 #
 # The commit that most recently added a file or moved it to its current
 # location "owns" the file and the file "belongs to" the commit.
@@ -46,17 +49,17 @@
 # to the main screen.)
 #
 # Two modes of operation are supported. In source-management mode, package
-# archives -- from any section -- and/or ownership manifests are dropped from
-# the source repository or migrated to the destination repository. In
+# archives (from any section) or metadata files are dropped from the source
+# repository or migrated to the destination repository. In
 # destination-management mode, starting from one of the sections in the
-# destination repository, package archives or ownership manifests are dropped,
-# or package archives (not ownership manifests) migrated to its counterpart
+# destination repository, package archives or metadata files are dropped, or
+# package archives (not metadata files) are migrated to its counterpart
 # section (also in the destination repository). These mode-specific source
 # directories are called "managed directories" and the files they contain
 # "managed files". The "unmanaged files" include any file outside of a managed
-# directory, any ownership manifest not related (by package name or project
-# name) to a managed package archive, and any file inside a managed directory
-# with an invalid path (project component is missed, etc).
+# directory, any metadata not related (by package name or project name) to a
+# managed package archive, and any file inside a managed directory with an
+# invalid path (project component is missed, etc).
 #
 # The destination-management mode is actually just a name used to refer to a
 # number of more specific, near-identical modes distinguished only by the
@@ -84,7 +87,7 @@
 #   Enter the stable-management mode: manage the stable->legacy transitions in
 #   the destination repository. Note that commits/files cannot be dropped in
 #   this mode and, by extension, it does not support any operations on
-#   ownership manifests.
+#   metadata files.
 #
 # --alpha[=<filter>]
 #
@@ -313,9 +316,10 @@ fi
 
 # Print information about the path of a source repository file.
 #
-# The information includes its class (package archive, ownership manifest, or
-# unmanaged), the project directory, and in the case of package archives, the
-# section directory.
+# The information includes its class (package archive, ownership manifest,
+# package review manifest, or unmanaged); the project directory; in the case
+# of package archives, the section directory; and in the case of package
+# review manifests, the package name.
 #
 # <path> must be relative to the source repository directory (`src_dir`).
 #
@@ -323,14 +327,16 @@ fi
 # print `archive\n<project>\n<section-dir>\n`. The section directory will be
 # relative to the source repository directory.
 #
-# Otherwise, if the path refers to a managed ownership manifest file in the
-# source repository, then print `ownership\n<project>\n`.
+# If the path refers to a managed ownership manifest file in the source
+# repository, then print `ownership\n<project>\n`.
+#
+# If the path refers to a managed package review manifest file in the source
+# repository, then print `review\n<project>\n<package>\n`.
 #
 # Otherwise the file is unmanaged; print `unmanaged\n`.
 #
 # Note that the function doesn't validate the file path exhaustively and may
-# classify improperly named file (invalid base name, etc) as an archive or
-# ownership.
+# classify an improperly named file as an archive or ownership in some cases.
 #
 function src_path_info () # <path>
 {
@@ -345,20 +351,40 @@ function src_path_info () # <path>
   for s in "${src_sections[@]}"; do
     if [[ "$f" =~ ^"$s"/([^/]+)/[^/]+$ ]]; then
       echo "archive"
-      echo "${BASH_REMATCH[1]}"
+      echo "${BASH_REMATCH[1]}" # Project
       echo "$s"
       return
     fi
   done
 
-  # Not a managed archive path, so check whether it's an ownership
-  # manifest. Valid source repository ownership manifest paths start with the
-  # directory in `src_owners` and is followed by at least one subdirectory
-  # (the project directory, again).
+  # Not a managed archive path, so check whether it's a metadata file.
+
+  # If the ownership information directory is not configured then it cannot be
+  # ownership or a review which covers all kinds of metadata and therefore it
+  # must be unmanaged.
   #
-  if [[ -n "$src_owners" && ("$f" =~ ^"$src_owners"/([^/]+)/.+$) ]]; then
+  if [[ -z "$src_owners" ]]; then
+    echo "unmanaged"
+    return
+  fi
+
+  # Check whether it's a package review or ownership manifest.
+  #
+  # Examples of valid paths:
+  #
+  #   Package review manifest:   foo/libfoo/1.2.3/reviews.manifest
+  #
+  #   Project ownership:         foo/project-owner.manifest
+  #   Package ownership:         foo/libfoo/package-owner.manifest
+  #
+  if [[ "$f" =~ ^"$src_owners"/([^/]+)/([^/]+)/[^/]+/reviews.manifest$ ]]; then
+    echo "review"
+    echo "${BASH_REMATCH[1]}" # Project
+    echo "${BASH_REMATCH[2]}" # Package
+  elif [[ "$f" =~ ^"$src_owners"/([^/]+)/project-owner.manifest$ ||
+          "$f" =~ ^"$src_owners"/([^/]+)/[^/]+/package-owner.manifest$ ]]; then
     echo "ownership"
-    echo "${BASH_REMATCH[1]}"
+    echo "${BASH_REMATCH[1]}" # Project
   else
     echo "unmanaged"
   fi
@@ -412,14 +438,13 @@ function init_globals ()
   pending_seq=()
   file_commits=()
 
-  # Find all package archives and owner manifest files in the source
-  # repository.
+  # Find all package archives and metadata files in the source repository.
   #
   # Every file in a repository section directory except *.manifest is a
-  # package archive and every file in the owners directory is a project or
-  # package owner manifest. Therefore run find separately on each section
-  # directory and the owners directory to build a list containing only
-  # package-related files.
+  # package archive and every file in the owners directory is a
+  # project/package owner or package review manifest and thus a metadata
+  # file. Therefore run find separately on each section directory and the
+  # owners directory to build a list containing only package-related files.
   #
   # Store the relative to the repository directory file paths in an array,
   # `src_files`, used to build the set of pending commits.
@@ -441,8 +466,8 @@ function init_globals ()
     fi
   done
 
-  # Don't load ownership manifests if in stable-management mode because it
-  # does not support any operations on them.
+  # Don't load metadata if in stable-management mode because it does not
+  # support any operations on them.
   #
   if [[ ("$mode" != "stable") &&
         -n "$src_owners" && -d "$src_dir/$src_owners" ]]; then
@@ -462,17 +487,29 @@ function init_globals ()
   #
   # If in destination-management mode:
   #
-  #   - Unless in stable-management mode (which does not operate on ownership
-  #     manifests at all), do not add unmanaged ownership manifests' commits
-  #     to `pending_set`. (Note that these commits could be added as a result
-  #     of other files, and that, in source-management mode, all ownership
-  #     manifests are managed.)
+  #   - Unless in stable-management mode (which does not operate on metadata
+  #     at all), do not add unmanaged ownership or package review manifests'
+  #     commits to `pending_set`. (Note that these commits could be added as a
+  #     result of other files, and that, in source-management mode, all
+  #     metadata files are managed.)
   #
   #     The `managed_projs` and `managed_pkgnames` associative arrays store
   #     the project and package names, respectively, of every package archive
-  #     in the managed section and are used to identify unmanaged ownership
-  #     manifests (see below). (Both are empty in source-management and
+  #     in the managed section and are used to identify unmanaged metadata
+  #     files (see below). (Both are empty in source-management and
   #     stable-management modes.)
+  #
+  #     Note that this system is somewhat flawed because it does not track
+  #     package versions (only names). Thus we cannot distinguish, for
+  #     example, between a package archive added with metadata in commit A and
+  #     a newer version of the package added in a more recent commit B. If the
+  #     archive in commit A has since been migrated this would cause the
+  #     metadata in commit A to be erroneously classified as managed (due to
+  #     the new package archive being found in the managed directory) and thus
+  #     commit A won't be filtered out. This would be easy to fix for package
+  #     review manifests because the package version is in the path but this
+  #     is not the case for ownership manifests so we fall back to filtering
+  #     these commits out when displaying the commits in the UI's main screen.
   #
   #   - Exclude from `pending_set` those commits without any package archives
   #     that match the pattern in `filter`.
@@ -506,12 +543,12 @@ function init_globals ()
 
     file_commits["$f"]="$h"
 
-    # Don't add unmanaged ownership manifests to `pending_set` (by skipping
-    # them) if in any destination-management mode but stable-management (in
-    # which case there are none in `src_files`). An ownership manifest is
-    # unmanaged if its project or package name has not been seen (archives
-    # come before ownership manifests in `src_files`). To this end, also
-    # record the package and project names of every package archive.
+    # Don't add unmanaged metadata files to `pending_set` (by skipping them)
+    # if in any destination-management mode but stable-management (in which
+    # case there are none in `src_files`). A metadata file is unmanaged if its
+    # project or package name has not been seen (archives come before metadata
+    # files in `src_files`). To this end, also record the package and project
+    # names of every package archive.
     #
     if [[ ("$mode" != "source") && ("$mode" != "stable") ]]; then
       local fi
@@ -536,6 +573,16 @@ function init_globals ()
                  ! "${managed_pkgnames[$k]}") ||
                 (("$f" == */project-owner.manifest) &&
                  ! "${managed_projs[$k]}") ]]; then
+            continue
+          fi
+          ;;
+        "review")
+          local pname="${fi[2]}" # Package name.
+
+          # Skip this package review manifest if its package name has not been
+          # seen (which means it's unmanaged).
+          #
+          if [[ ! "${managed_pkgnames[$pname]}" ]]; then
             continue
           fi
           ;;
@@ -747,11 +794,18 @@ function remove_pkg_archives ()
 }
 
 # The commit bundle array is the set of selected pending commits. Its elements
-# are the corresponding indexes of the `pending_seq` array (but offset by +1).
-# The indexes are always kept in ascending and, therefore, chronological order
-# (because the commits in `pending_seq` are in chronological order).
+# are the commits' ordinal numbers as displayed in the UI and they are always
+# in the displayed order. Each element indexes `pending_seq_idx` yielding the
+# index in `pending_seq` containing the corresponding commit hash.
 #
 bundle=()
+
+# Maps from the ordinal number of a displayed commit to the index into
+# `pending_seq` containing the corresponding commit hash. Each index of this
+# array is the ordinal number of a displayed commit with the value being the
+# index into `pending_seq` containing the commit hash.
+#
+pending_seq_idx=()
 
 # Contains the managed file paths belonging to commits in the commit bundle.
 # Used as the starting point for operations such as the migration and dropping
@@ -781,7 +835,10 @@ function collect_bundle_files ()
 
   local i
   for i in "${bundle[@]}"; do
-    local h="${pending_seq[$i-1]}" # The current commit's abbreviated hash.
+    # Find the current commit's abbreviated hash from its displayed ordinal
+    # number.
+    #
+    local h="${pending_seq[${pending_seq_idx[$i-1]}]}" # Current commit's hash.
 
     local f
     while read -d '' f; do
@@ -879,7 +936,7 @@ function src_section_name () # <section-dir>
 #
 # Takes as input the bundle files in the global `bundle_files` array which is
 # assumed to be non-empty and to contain only managed files (package archives
-# or ownership manifests) belonging to commits in the commit bundle.
+# or metadata files) belonging to commits in the commit bundle.
 #
 # If the migration succeeds, set the global `operation_result` variable to
 # true. Otherwise, in case of failure, issue appropriate diagnostics and set
@@ -901,16 +958,16 @@ function src_section_name () # <section-dir>
 #   conflicting archive in any of the sections in the destination repository
 #   (see check_pkg_duplicate()).
 #
-# - The migration would overwrite ownership info in the destination
-#   repository. (Currently ownership is updated by modifying the files
-#   directly.)
+# - The migration would overwrite metadata in the destination
+#   repository. (Currently ownership and reviews are updated by modifying the
+#   files directly.)
 #
 # The migration process proceeds as follows:
 #
 # - Move files: all of the files in the selected commit bundle are moved from
 #   the source repository into the destination repository:
 #
-#   - Owners to owners directory.
+#   - Owners and reviews to owners directory.
 #
 #   - Packages into corresponding sections:
 #
@@ -932,7 +989,7 @@ function src_section_name () # <section-dir>
 #   Stage (but don't commit) the removal of the files from the source
 #   repository and their addition to the destination repository.
 #
-# - Make commits to the source and destination respositories with appropriate
+# - Make commits to the source and destination repositories with appropriate
 #   commit messages:
 #
 #    Source repository:
@@ -942,6 +999,7 @@ function src_section_name () # <section-dir>
 #      "remove <package>/<version>"
 #      "remove owners/<project>/project-owner.manifest"
 #      "remove owners/<project>/<package>/package-owner.manifest"
+#      "remove owners/<project>/<package>/<version>/reviews.manifest"
 #
 #    Destination repository:
 #
@@ -951,6 +1009,7 @@ function src_section_name () # <section-dir>
 #      "replace <package>/<version> with <version>"     (if replacing)
 #      "add owners/<project>/project-owner.manifest"
 #      "add owners/<project>/<package>/package-owner.manifest"
+#      "add owners/<project>/<package>/<version>/reviews.manifest"
 #
 function migrate_src ()
 {
@@ -958,16 +1017,19 @@ function migrate_src ()
 
   # Check that all files in the bundle are in the bundle section and/or bundle
   # project before migrating any of them. Classify each file as a package
-  # archive or ownership manifest as we go along, based on its path.
+  # archive or ownership/package review manifest as we go along, based on its
+  # path. Note that ownership and package review manifests are treated
+  # identically here.
   #
   # The bundle section is derived from the first package archive encountered
-  # and the bundle project from the first package archive or ownership
-  # manifest encountered.
+  # and the bundle project from the first package archive or metadata file
+  # encountered.
   #
   local src_sect=          # Source section name.
   local proj=              # The bundle (source) project.
   local pkgs=()            # The bundle's package archives.
   local owns=()            # The bundle's ownership manifests.
+  local revs=()            # The bundle's package review manifests.
 
   local f
   for f in "${bundle_files[@]}"; do
@@ -978,6 +1040,9 @@ function migrate_src ()
 
     if [[ "$ftype" == "ownership" ]]; then
       owns+=("$f")
+
+    elif [[ "$ftype" == "review" ]]; then
+      revs+=("$f")
 
     elif [[ "$ftype" == "archive" ]]; then
       pkgs+=("$f")
@@ -1009,7 +1074,7 @@ function migrate_src ()
   done
 
   # Finalize migration variables the values of which depend on whether the
-  # bundle contains at least one package archive or ownership manifests only.
+  # bundle contains at least one package archive or metadata only.
   #
   # The source and destination commit messages are composed incrementally as
   # the migration process proceeds.
@@ -1039,17 +1104,17 @@ function migrate_src ()
 
     src_cmsg="Migrate $proj from $src_sect to $dst_repo_name/$dst_sect"$'\n\n'
     dst_cmsg="Migrate $proj from $src_repo_name/$src_sect to $dst_sect"$'\n\n'
-  else                           # Bundle consists only of ownership manifests.
+  else # Bundle consists only of metadata.
 
     # The setup where the ownership authentication is disabled on the
     # destination but enabled on source is probably obscure, but let's
     # consider it possible since the submit-git handler allows such a setup.
     #
     if [[ -n "$dst_owners" ]]; then
-      src_cmsg="Migrate $proj ownership info to $dst_repo_name"$'\n\n'
-      dst_cmsg="Migrate $proj ownership info from $src_repo_name"$'\n\n'
+      src_cmsg="Migrate $proj metadata info to $dst_repo_name"$'\n\n'
+      dst_cmsg="Migrate $proj metadata info from $src_repo_name"$'\n\n'
     else
-      src_cmsg="Remove $proj ownership info"$'\n\n'
+      src_cmsg="Remove $proj metadata info"$'\n\n'
       dst_cmsg= # Nothing to commit.
     fi
   fi
@@ -1061,8 +1126,8 @@ function migrate_src ()
   #
   trap cleanup EXIT
 
-  # Migrate a package archive or ownership manifest file from the source
-  # repository to the destination repository.
+  # Migrate a package archive or metadata file from the source repository to
+  # the destination repository.
   #
   # <src> is the path of the source file, relative to the source repository
   # directory, and <dst> is the path of the destination directory, relative to
@@ -1130,16 +1195,15 @@ function migrate_src ()
     migrate_file "$f" "$dst_sect_dir/$proj"
   done
 
-  # Migrate the bundle's ownership manifests.
+  # Migrate the bundle's metadata (ownership and package review manifests).
   #
   # If ownership authentication is disabled on the destination repository,
-  # only remove ownership manifests from the source repository (that is, don't
+  # only remove metadata files from the source repository (that is, don't
   # migrate).
   #
-  # Fail if an ownership manifest already exists in the destination
-  # repository.
+  # Fail if a metadata file already exists in the destination repository.
   #
-  for f in "${owns[@]}"; do
+  for f in "${owns[@]}" "${revs[@]}"; do
     src_cmsg+="  remove $f"$'\n'
 
     if [[ -n "$dst_owners" ]]; then
@@ -1180,7 +1244,7 @@ function migrate_src ()
 
 # Destination-management mode migration: migrate the package archives in the
 # selected commit bundle from the source (managed) section to its counterpart
-# section and skip ownership manifests (with a notification message).
+# section and skip metadata files (with a notification message).
 #
 # Takes as input the bundle files in the global `bundle_files` array which is
 # assumed to be non-empty and to contain only managed files belonging to
@@ -1194,8 +1258,8 @@ function migrate_src ()
 #
 # - Only the destination repository is involved.
 #
-# - Ownership manifests cannot be migrated in destination-management mode and
-#   are skipped.
+# - Metadata files cannot be migrated in destination-management mode and are
+#   skipped.
 #
 # - All managed package archives in the commit bundle are known to be in the
 #   same section (because all files outside of the managed section are
@@ -1220,8 +1284,8 @@ function migrate_src ()
 # The migration process proceeds as follows:
 #
 # - Move files: all of the package archives in the selected commit bundle are
-#   moved from the source section to the destination section. Ownership
-#   manifests are skipped with a notification message.
+#   moved from the source section to the destination section. Metadata files
+#   are skipped with a notification message.
 #
 #   Any package archives in the destination section directory with the same
 #   name and version but a different revision (currently whether lower or
@@ -1256,7 +1320,7 @@ function migrate_dst ()
   local dst_sect_dir="${dst_sections[$dst_sect]}" # Dst. section directory.
 
   # Check that every file is from the bundle project (taken from the path of
-  # the first file encountered) and skip ownership manifests.
+  # the first file encountered) and skip metadata files.
   #
   local proj=  # The bundle project.
 
@@ -1278,14 +1342,14 @@ function migrate_dst ()
       return
     fi
 
-    # Skip ownership manifests and remove them from `bundle_files` so that we
-    # need not worry about file type for the rest of this function.
+    # Skip metadata files and remove them from `bundle_files` so that we need
+    # not worry about file type for the rest of this function.
     #
-    # Note that, in commit-splitting mode, skipped ownership manifests will
-    # not be printed in the file list after the migration despite not having
-    # been actioned.
+    # Note that, in commit-splitting mode, skipped metadata files will not be
+    # printed in the file list after the migration despite not having been
+    # actioned.
     #
-    if [[ "$ftype" == "ownership" ]]; then
+    if [[ "$ftype" == "ownership" || "$ftype" == "review" ]]; then
       info "skipping '$f'"
       unset "bundle_files[$i]"
     fi
@@ -1309,7 +1373,9 @@ function migrate_dst ()
   #
   local cmsg="Migrate $proj from $src_sect to $dst_sect"$'\n\n'
 
-  for f in "${bundle_files[@]}"; do # Note: contains no ownership manifests.
+  # Note: contains no metadata files.
+  #
+  for f in "${bundle_files[@]}"; do
     # Get the current package's name and version from its embedded manifest
     # (we already have the source project in $proj).
     #
@@ -1373,21 +1439,21 @@ function migrate_dst ()
   read -p "press Enter to continue"
 }
 
-# Check that ownership consistency would be maintained if the bundle's files
+# Check that metadata consistency would be maintained if the bundle's files
 # were dropped.
 #
 # Print "true" to stdout if all checks passed, and nothing in case of failure.
 #
 # Fail if a drop would leave, in the real source or destination repositories,
-# package archives without package or project ownership, or package ownership
-# manifests without project ownership.
+# package archives without package/project ownership or reviews, or package
+# ownership/review manifests without project ownership.
 #
-# Note that in order to search for unselected packages and ownership
-# manifests, each repository's submit config is loaded again because the data
-# loaded during global init does not reflect the true state of the
-# repositories on disk if in destination-management mode.
+# Note that in order to search for unselected packages and metadata files,
+# each repository's submit config is loaded again because the data loaded
+# during global init does not reflect the true state of the repositories on
+# disk if in destination-management mode.
 #
-function check_drop_ownership_consistency () # <proj>
+function check_drop_metadata_consistency () # <proj>
 {
   local proj="$1"  # Project name.
 
@@ -1447,17 +1513,19 @@ function check_drop_ownership_consistency () # <proj>
   find_unsel_pkg "$real_src_dir"
   find_unsel_pkg "$dst_dir"
 
-  # Find unselected package ownership from <proj> in the real source and
-  # destination repositories.
-  #
-  local unsel_pkg_owns= # True if there are unselected pkg ownership manifests.
+  # Find unselected metadata from <proj> in the real source and destination
+  # repositories.
 
-  # Find unselected package ownership manifest from <proj> in the repository
-  # directory specified by <repo-dir> and, if found, set `unsel_pkg_owns` to
+  # True if there are unselected metadata files.
+  #
+  local unsel_pkg_metadata=
+
+  # Find unselected metadata files from <proj> in the repository directory
+  # specified by <repo-dir> and, if found, set `unsel_pkg_metadata` to
   # true. See find_unsel_pkg() above for a note about the role `bundle_files`
   # plays.
   #
-  function find_unsel_pkg_owns ()  # <repo-dir>
+  function find_unsel_pkg_metadata ()  # <repo-dir>
   {
     local rd="$1"  # Repository directory.
 
@@ -1471,29 +1539,30 @@ function check_drop_ownership_consistency () # <proj>
       while read f; do
         f="${f#$rd/}"  # Make path relative to repo dir.
 
-        if [[ ("$f" == */package-owner.manifest) &&
+        if [[ ("$f" == */package-owner.manifest ||
+               "$f" == */reviews.manifest) &&
               (! "$(managed_repo "$rd")" ||
                ! "$(contains "$f" "${bundle_files[@]}")") ]]; then
-          unsel_pkg_owns=true
+          unsel_pkg_metadata=true
           break
         fi
       done < <(find "$pd" -type f)
     fi
   }
 
-  find_unsel_pkg_owns "$real_src_dir"
-  find_unsel_pkg_owns "$dst_dir"
+  find_unsel_pkg_metadata "$real_src_dir"
+  find_unsel_pkg_metadata "$dst_dir"
 
-  # Fail if any ownership info about to be dropped would leave any ownerless
-  # package archives or package ownership manifests.
+  # Fail if any ownership or review info about to be dropped would leave any
+  # ownerless package archives.
   #
   local f
   for f in "${bundle_files[@]}"; do
     case "$f" in
       */project-owner.manifest)
-        if [[ ("${#unsel_pkg_names[@]}" -ne 0) || "$unsel_pkg_owns" ]]; then
+        if [[ ("${#unsel_pkg_names[@]}" -ne 0) || "$unsel_pkg_metadata" ]]; then
           info "cannot drop project ownership info without \
-associated packages and/or package ownership"
+associated packages and/or package metadata"
           return
         fi
         ;;
@@ -1502,6 +1571,18 @@ associated packages and/or package ownership"
         if [[ -v "unsel_pkg_names[$pname]" ]]; then
           info "cannot drop package ownership without associated packages"
           return
+        fi
+        ;;
+      */reviews.manifest)
+        local fi
+        src_path_info "$f" | readarray -t fi
+        local ftype="${fi[0]}"
+        if [[ "$ftype" == "review" ]]; then
+          local pname="${fi[2]}"
+          if [[ -v "unsel_pkg_names[$pname]" ]]; then
+            info "cannot drop package reviews without associated packages"
+            return
+          fi
         fi
         ;;
     esac
@@ -1514,7 +1595,7 @@ associated packages and/or package ownership"
 #
 # Takes as input the bundle files in the global `bundle_files` array which is
 # assumed to be non-empty and to contain only managed files (package archives
-# or ownership manifests) belonging to commits in the commit bundle.
+# or metadata) belonging to commits in the commit bundle.
 #
 # The mechanism by which success or failure is indicated is the same as for
 # migrate_src(). (In particular, the source repository will be left clean if
@@ -1525,8 +1606,8 @@ associated packages and/or package ownership"
 # - Files in the commit bundle are not all from the same project (the "bundle
 #   project") and section (the "bundle section").
 #
-# - Ownership info would be removed for any files remaining after the drop
-#   (see check_drop_ownership_consistency()).
+# - Metadata would be removed for any files remaining after the drop (see
+#   check_drop_metadata_consistency()).
 #
 # - The mode is the stable-management, because stable, published packages
 #   cannot be unpublished.
@@ -1534,12 +1615,12 @@ associated packages and/or package ownership"
 # The operation proceeds as follows:
 #
 # - Check that all files are from the same project and check the resulting
-#   ownership consistency.
+#   metadata consistency.
 #
 # - Get from the user the reason for dropping the files.
 #
 # - Remove each file from the source repository. Get user confirmation before
-#   dropping ownership manifests, issuing a notification message for each one
+#   dropping metadata files, issuing a notification message for each one
 #   skipped. Stage (but don't commit) each removal as the operation proceeds.
 #
 # - Make a commit to the source repository with an appropriate commit message.
@@ -1551,13 +1632,15 @@ associated packages and/or package ownership"
 #     "  remove <package>/<version>"
 #     "  remove owners/<project>/project-owner.manifest"
 #     "  remove owners/<project>/<package>/package-owner.manifest"
+#     "  remove owners/<project>/<package>/<version>/reviews.manifest"
 #
-#   If dropping only ownership information:
+#   If dropping only ownership and/or review information:
 #
-#     "Drop <project> ownership (<reason>)"
+#     "Drop <project> ownership/review(s) (<reason>)"
 #
 #     "  remove owners/<project>/project-owner.manifest"
 #     "  remove owners/<project>/<package>/package-owner.manifest"
+#     "  remove owners/<project>/<package>/<version>/reviews.manifest"
 #
 function drop ()
 {
@@ -1570,24 +1653,25 @@ function drop ()
 
   # Check that all files in the bundle are in the bundle project and that all
   # package archives are in the bundle section before dropping any of
-  # them. Classify each file as a package archive or ownership manifest as we
-  # go along, based on its path.
+  # them. Classify each file as a package archive, ownership manifest, or
+  # package review manifest as we go along, based on its path. Note that
+  # ownership and package review manifests are treated identically here.
   #
   # The bundle section is derived from the first package archive encountered
-  # and the bundle project from the first package archive or ownership
-  # manifest encountered.
+  # and the bundle project from the first package archive or metadata file
+  # encountered.
   #
-  # Get user confirmation to drop each ownership manifest, skipping those
-  # declined.
+  # Get user confirmation to drop each metadata file, skipping those declined.
   #
-  # Note that, in commit-splitting mode, skipped ownership manifests will not
-  # be printed in the file list after the migration despite not having been
+  # Note that, in commit-splitting mode, skipped metadata files will not be
+  # printed in the file list after the migration despite not having been
   # actioned.
   #
   local proj=                   # The bundle project.
   local sect=                   # The bundle section name.
   local pkgs=()                 # Package archives to be dropped.
   local owns=()                 # Ownership manifests to be dropped.
+  local revs=()                 # Package review manifests to be dropped.
 
   local i
   for i in "${!bundle_files[@]}"; do
@@ -1597,11 +1681,12 @@ function drop ()
     local ftype="${fi[0]}" # Current file's type.
     local fproj="${fi[1]}" # Current file's project.
 
-    if [[ "$ftype" == "ownership" ]]; then
-      # Ask whether or not this ownership manifest should be dropped. Add it
-      # to `owns` if the user confirmed or, if the user declined, skip it by
-      # not adding it to `owns` and by removing it from `bundle_files` (to
-      # prevent check_drop_ownership_consistency() from thinking it's still
+    if [[ "$ftype" == "ownership" || "$ftype" == "review" ]]; then
+      # Ask whether or not this ownership/package review manifest should be
+      # dropped. Add it to `owns` or `revs` if the user confirmed or, if the
+      # user declined, skip it by not adding it to `owns`/`revs` and by
+      # removing it from `bundle_files` (to prevent
+      # check_drop_metadata_consistency() from thinking it's still
       # selected).
       #
       local opt=
@@ -1610,7 +1695,11 @@ function drop ()
       done
 
       if [[ "$opt" == y ]]; then
-        owns+=("$f")
+        if [[ "$ftype" == "ownership" ]]; then
+          owns+=("$f")
+        elif [[ "$ftype" == "review" ]]; then
+          revs+=("$f")
+        fi
       else
         info "skipping '$f'"
         unset "bundle_files[$i]"
@@ -1644,17 +1733,19 @@ function drop ()
     fi
   done
 
-  # Fail if there is nothing to drop or if the drop would remove ownership
-  # info from any remaining files.
+  # Fail if there is nothing to drop or if the drop would remove metadata from
+  # any remaining files.
   #
-  # There would be nothing to drop if the bundle consisted only of ownership
-  # manifests and the user declined to drop all of them.
+  # There would be nothing to drop if the bundle consisted only of metadata
+  # files and the user declined to drop all of them.
   #
-  # Note that check_drop_ownership_consistency() prints diagnostics in case of
-  # failure.
+  # Note that check_drop_metadata_consistency() prints diagnostics in
+  # case of failure.
   #
-  if [[ (("${#pkgs[@]}" -eq 0) && ("${#owns[@]}" -eq 0)) ||
-        ! "$(check_drop_ownership_consistency "$proj")" ]]; then
+  if [[ (("${#pkgs[@]}" -eq 0) &&
+         ("${#owns[@]}" -eq 0) &&
+         ("${#revs[@]}" -eq 0)) ||
+         ! "$(check_drop_metadata_consistency "$proj")" ]]; then
     return
   fi
 
@@ -1672,8 +1763,8 @@ function drop ()
   local cmsg= # Commit message.
   if [[ "${#pkgs[@]}" -ne 0 ]]; then # Bundle contains package archive(s).
     cmsg="Drop $proj from $sect ($reason)"$'\n\n'
-  else                             # Bundle contains only ownership manifests.
-    cmsg="Drop $proj ownership ($reason)"$'\n\n'
+  else # Bundle contains only metadata files.
+    cmsg="Drop $proj metadata ($reason)"$'\n\n'
   fi
 
   # Remove the bundle's files from the source repository and compose the
@@ -1696,7 +1787,7 @@ function drop ()
     run git -C "$src_dir" rm "$f" # Automatically removes empty directories.
   done
 
-  for f in "${owns[@]}"; do
+  for f in "${owns[@]}" "${revs[@]}"; do
     cmsg+="  remove $f"$'\n'
     run git -C "$src_dir" rm "$f" # Automatically removes empty directories.
   done
@@ -1755,6 +1846,7 @@ function push ()
 #   1/testing/foo/libfoo-1.2.3.tar.gz
 #   owners/foo/project-owner.manifest
 #   owners/foo/libfoo/package-owner.manifest
+#   owners/foo/libfoo/1.2.3/reviews.manifest
 #
 # 2 (c00l0fff) Add bar/1.2.3
 #
@@ -2049,15 +2141,29 @@ while true; do
     bundle=()
   fi
 
+  # Print each commit in the pending set.
+  #
+  # In destination-management mode, only show commits with at least one
+  # managed archive file (with one exception; see below). That is, don't
+  # display commits adding metadata but no valid archives that currently exist
+  # in the managed section. These cases commonly arise when the archives from
+  # a commit also adding metadata have been migrated. The only operation
+  # potentially applicable to such a commit would be dropping its files but
+  # that would leave the (migrated) archives with missing metadata. So
+  # displaying these commits just creates noise. (Ideally we would have
+  # already filtered them out in init_globals() but that is not possible the
+  # way things are currently structured; see init_globals() for details.) The
+  # one exception to the above is that commits adding unmanaged files are also
+  # shown but these should be rare.
+  #
+
+  # Reset the indexes into pending_seq because the displayed commit ordinal
+  # numbers are about to be re-sequenced.
+  #
+  pending_seq_idx=()
+
   for i in "${!pending_seq[@]}"; do
     h="${pending_seq[$i]}"
-
-    # Print commit number, hash, and subject.
-    #
-    # Prefix with a newline to separate the first commit from the git-pull
-    # output and the rest from the previous commit info block.
-    #
-    printf "\n%d (%s) %s\n\n" "$((i+1))" "$h" "$(commit_subject "$h")" >&2
 
     # Print this commit's files.
     #
@@ -2077,6 +2183,24 @@ while true; do
     #   subsequent commit and never added back. These files are marked with
     #   '*' and will not prevent the migration of the commit.
     #
+
+    # A line of output for each of the current commit's files. Build the
+    # output in memory because we can only determine whether the commit should
+    # be displayed once we've been through all of its files (see above).
+    #
+    file_lines=()
+
+    # If true, show the current commit and its files.
+    #
+    show_commit=
+
+    # Don't hide any commits if in source-management mode because metadata is
+    # usually migrated along with the archives.
+    #
+    if [[ "$mode" == "source" ]]; then
+      show_commit=true
+    fi
+
     while read -d '' f; do
       src_path_info "$f" | readarray -t fi
       ftype="${fi[0]}"
@@ -2084,7 +2208,15 @@ while true; do
       if [[ "$ftype" == "unmanaged" ]]; then
         # File is unmanaged (and may or may not exist).
         #
-        info "? $f"
+        file_lines+=("? $f")
+
+        # Don't hide this commit if the unmanaged file exists on disk. (Note
+        # that in this context unmanaged means the file's path does not match
+        # a valid archive or metadata location so it could be of either type.)
+        #
+        if [[ -v "file_commits[$f]" ]]; then
+          show_commit=true
+        fi
       else
         # File is managed.
 
@@ -2094,31 +2226,57 @@ while true; do
         sz=  # File size.
         if [[ ("$ftype" == "archive") && -v "file_commits[$f]" ]]; then
           sz="$(file_size "$f")"
+
+          # This commit has a managed archive file so don't hide it.
+          #
+          show_commit=true
         fi
 
         if [[ "${file_commits[$f]}" == "$h" ]]; then
           # Last added or moved by the current commit.
           #
-          # If a commit included some managed and some unmanaged ownership
-          # manifests then it will not have been filtered out at the top and
-          # the unmanaged ownerships will also be shown here. (For an example,
-          # see the first commit output by `bpkg-util-manage --alpha` on the
-          # real cppget.org repos.) I don't think it's worth checking here
-          # that ownerships are managed because those sorts of commits should
-          # be rare. This script also refuses to operate on packages from
-          # different projects or sections.
+          # If a commit included some managed and some unmanaged metadata then
+          # it will not have been filtered out at the top and the unmanaged
+          # metadata will also be shown here. (For an example, see the first
+          # commit output by `bpkg-util-manage --alpha` on the real cppget.org
+          # repos.) I don't think it's worth checking here that metadata are
+          # managed because those sorts of commits should be rare. This script
+          # also refuses to operate on packages from different projects or
+          # sections.
           #
-          info "  $f  $sz"
+          file_lines+=("  $f  $sz")
         elif [[ -v "file_commits[$f]" ]]; then
-          info "! $f  $sz"  # Deleted and added back by subsequent commits.
+          file_lines+=("! $f  $sz")  # Deleted and added back by subsequent commits.
         else
           # File was deleted and never added again. Note that actioned files
           # of partially actioned commits will also appear this way.
           #
-          info "* $f"
+          file_lines+=("* $f")
         fi
       fi
     done < <(commit_files "$h")
+
+    if [[ $show_commit ]]; then
+      # Create the mapping from this commit's ordinal number to the index in
+      # pending_seq containing its commit hash.
+      #
+      pending_seq_idx+=($i)
+
+      cn="${#pending_seq_idx[@]}" # This commit's ordinal number.
+
+      # Print commit number, hash, and subject.
+      #
+      # Prefix with a newline to separate the first commit from the git-pull
+      # output and the rest from the previous commit info block.
+      #
+      printf "\n%d (%s) %s\n\n" "$cn" "$h" "$(commit_subject "$h")" >&2
+
+      # Print the commit's file lines.
+      #
+      for f in "${file_lines[@]}"; do
+        info "$f"
+      done
+    fi
   done
 
   # The main screen's prompt loop.
@@ -2153,10 +2311,10 @@ while true; do
       # Add commit to bundle.
       #
       [0-9]*)
-        if [[ ("$opt" =~ ^[1-9][0-9]*$) && -v "pending_seq[$opt-1]" ]]; then
+        if [[ ("$opt" =~ ^[1-9][0-9]*$) && -v "pending_seq_idx[$opt-1]" ]]; then
           if [[ ! "$(contains "$opt" "${bundle[@]}")" ]]; then
             bundle+=("$opt")
-	    h="${pending_seq[$opt-1]}"
+	    h="${pending_seq[${pending_seq_idx[$opt-1]}]}"
             info "commit $opt ($h) \"$(commit_subject "$h")\" \
 added to selected bundle"
           else
