@@ -365,6 +365,7 @@ function src_path_info () # <path>
   #
   if [[ -z "$src_owners" ]]; then
     echo "unmanaged"
+    return
   fi
 
   # Check whether it's a package review or ownership manifest.
@@ -1088,10 +1089,10 @@ function migrate_src ()
     # consider it possible since the submit-git handler allows such a setup.
     #
     if [[ -n "$dst_owners" ]]; then
-      src_cmsg="Migrate $proj ownership/review info to $dst_repo_name"$'\n\n'
-      dst_cmsg="Migrate $proj ownership/review info from $src_repo_name"$'\n\n'
+      src_cmsg="Migrate $proj metadata info to $dst_repo_name"$'\n\n'
+      dst_cmsg="Migrate $proj metadata info from $src_repo_name"$'\n\n'
     else
-      src_cmsg="Remove $proj ownership/review info"$'\n\n'
+      src_cmsg="Remove $proj metadata info"$'\n\n'
       dst_cmsg= # Nothing to commit.
     fi
   fi
@@ -1539,7 +1540,7 @@ function check_drop_metadata_consistency () # <proj>
       */project-owner.manifest)
         if [[ ("${#unsel_pkg_names[@]}" -ne 0) || "$unsel_pkg_metadata" ]]; then
           info "cannot drop project ownership info without \
-associated packages and/or package ownership/reviews"
+associated packages and/or package metadata"
           return
         fi
         ;;
