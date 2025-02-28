@@ -499,6 +499,18 @@ function init_globals ()
   #     files (see below). (Both are empty in source-management and
   #     stable-management modes.)
   #
+  #     Note that this system is somewhat flawed because it does not track
+  #     package versions (only names). Thus we cannot distinguish, for
+  #     example, between a package archive added with metadata in commit A and
+  #     a newer version of the package added in a more recent commit B. If the
+  #     archive in commit A has since been migrated this would cause the
+  #     metadata in commit A to be erroneously classified as managed (due to
+  #     the new package archive being found in the managed directory) and thus
+  #     commit A won't be filtered out. This would be easy to fix for package
+  #     review manifests because the package version is in the path but this
+  #     is not the case for ownership manifests so we fall back to filtering
+  #     these commits out when displaying the commits in the UI's main screen.
+  #
   #   - Exclude from `pending_set` those commits without any package archives
   #     that match the pattern in `filter`.
   #
@@ -782,11 +794,18 @@ function remove_pkg_archives ()
 }
 
 # The commit bundle array is the set of selected pending commits. Its elements
-# are the corresponding indexes of the `pending_seq` array (but offset by +1).
-# The indexes are always kept in ascending and, therefore, chronological order
-# (because the commits in `pending_seq` are in chronological order).
+# are the commits' ordinal numbers as displayed in the UI and they are always
+# in the displayed order. Each element indexes `pending_seq_idx` yielding the
+# index in `pending_seq` containing the corresponding commit hash.
 #
 bundle=()
+
+# Maps from the ordinal number of a displayed commit to the index into
+# `pending_seq` containing the corresponding commit hash. Each index of this
+# array is the ordinal number of a displayed commit with the value being the
+# index into `pending_seq` containing the commit hash.
+#
+pending_seq_idx=()
 
 # Contains the managed file paths belonging to commits in the commit bundle.
 # Used as the starting point for operations such as the migration and dropping
@@ -816,7 +835,10 @@ function collect_bundle_files ()
 
   local i
   for i in "${bundle[@]}"; do
-    local h="${pending_seq[$i-1]}" # The current commit's abbreviated hash.
+    # Find the current commit's abbreviated hash from its displayed ordinal
+    # number.
+    #
+    local h="${pending_seq[${pending_seq_idx[$i-1]}]}" # Current commit's hash.
 
     local f
     while read -d '' f; do
@@ -2119,15 +2141,26 @@ while true; do
     bundle=()
   fi
 
+  # Print each commit in the pending set.
+  #
+  # In destination-management mode, only show commits with at least one
+  # managed archive file. That is, don't display commits adding metadata but
+  # no valid archives that currently exist in the managed section. These cases
+  # commonly arise when the archives from a commit also adding metadata have
+  # been migrated. The only operation potentially applicable to such a commit
+  # would be dropping its files but that would leave the (migrated) archives
+  # with missing metadata. So displaying these commits just creates
+  # noise. (Ideally we would have already filtered them out in init_globals()
+  # but that is not possible the way things are currently structured; see
+  # init_globals() for details.)
+
+  # Reset the indexes into pending_seq because the displayed commit ordinal
+  # numbers are about to be re-sequenced.
+  #
+  pending_seq_idx=()
+
   for i in "${!pending_seq[@]}"; do
     h="${pending_seq[$i]}"
-
-    # Print commit number, hash, and subject.
-    #
-    # Prefix with a newline to separate the first commit from the git-pull
-    # output and the rest from the previous commit info block.
-    #
-    printf "\n%d (%s) %s\n\n" "$((i+1))" "$h" "$(commit_subject "$h")" >&2
 
     # Print this commit's files.
     #
@@ -2147,6 +2180,24 @@ while true; do
     #   subsequent commit and never added back. These files are marked with
     #   '*' and will not prevent the migration of the commit.
     #
+
+    # A line of output for each of the current commit's files. Build the
+    # output in memory because we can only determine whether the commit should
+    # be displayed once we've been through all of its files (see above).
+    #
+    file_lines=()
+
+    # If true, show the current commit and its files.
+    #
+    show_commit=
+
+    # Don't hide any commits if in source-management mode because metadata is
+    # usually migrated along with the archives.
+    #
+    if [[ "$mode" == "source" ]]; then
+      show_commit=true
+    fi
+
     while read -d '' f; do
       src_path_info "$f" | readarray -t fi
       ftype="${fi[0]}"
@@ -2154,7 +2205,15 @@ while true; do
       if [[ "$ftype" == "unmanaged" ]]; then
         # File is unmanaged (and may or may not exist).
         #
-        info "? $f"
+        file_lines+=("? $f")
+
+        # Show this commit if this unmanaged file exists on disk. (Note that
+        # in this context unmanaged means the file's path does not match a
+        # valid archive or metadata location so it could be of either type.)
+        #
+        if [[ -v "file_commits[$f]" ]]; then
+          show_commit=true
+        fi
       else
         # File is managed.
 
@@ -2164,6 +2223,10 @@ while true; do
         sz=  # File size.
         if [[ ("$ftype" == "archive") && -v "file_commits[$f]" ]]; then
           sz="$(file_size "$f")"
+
+          # This commit has a managed archive file so don't hide it.
+          #
+          show_commit=true
         fi
 
         if [[ "${file_commits[$f]}" == "$h" ]]; then
@@ -2178,17 +2241,39 @@ while true; do
           # also refuses to operate on packages from different projects or
           # sections.
           #
-          info "  $f  $sz"
+          file_lines+=("  $f  $sz")
         elif [[ -v "file_commits[$f]" ]]; then
-          info "! $f  $sz"  # Deleted and added back by subsequent commits.
+          file_lines+=("! $f  $sz")  # Deleted and added back by subsequent commits.
         else
           # File was deleted and never added again. Note that actioned files
           # of partially actioned commits will also appear this way.
           #
-          info "* $f"
+          file_lines+=("* $f")
         fi
       fi
     done < <(commit_files "$h")
+
+    if [[ $show_commit ]]; then
+      # Create the mapping from this commit's ordinal number to the index in
+      # pending_seq containing its commit hash.
+      #
+      pending_seq_idx+=($i)
+
+      cn="${#pending_seq_idx[@]}" # This commit's ordinal number.
+
+      # Print commit number, hash, and subject.
+      #
+      # Prefix with a newline to separate the first commit from the git-pull
+      # output and the rest from the previous commit info block.
+      #
+      printf "\n%d (%s) %s\n\n" "$cn" "$h" "$(commit_subject "$h")" >&2
+
+      # Print the commit's file lines.
+      #
+      for f in "${file_lines[@]}"; do
+        info "$f"
+      done
+    fi
   done
 
   # The main screen's prompt loop.
@@ -2223,10 +2308,10 @@ while true; do
       # Add commit to bundle.
       #
       [0-9]*)
-        if [[ ("$opt" =~ ^[1-9][0-9]*$) && -v "pending_seq[$opt-1]" ]]; then
+        if [[ ("$opt" =~ ^[1-9][0-9]*$) && -v "pending_seq_idx[$opt-1]" ]]; then
           if [[ ! "$(contains "$opt" "${bundle[@]}")" ]]; then
             bundle+=("$opt")
-	    h="${pending_seq[$opt-1]}"
+	    h="${pending_seq[${pending_seq_idx[$opt-1]}]}"
             info "commit $opt ($h) \"$(commit_subject "$h")\" \
 added to selected bundle"
           else
